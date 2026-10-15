@@ -1,0 +1,68 @@
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createComposition } from '../shared/composition'
+import { App } from './App'
+
+vi.mock('./score/ScoreView', () => ({ ScoreView: () => <div>Engraving surface</div> }))
+afterEach(() => { delete window.notation })
+
+describe('score workspace', () => {
+  it('creates a score, edits metadata, enters notes, and reports a full bar', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(screen.getByRole('button', { name: 'New score' }))
+    await user.clear(screen.getByLabelText('Title'))
+    await user.type(screen.getByLabelText('Title'), 'First melody{Enter}')
+    expect(document.title).toContain('First melody')
+    await user.selectOptions(screen.getByLabelText('Duration'), '1920')
+    await user.click(screen.getByRole('button', { name: '+ Add note' }))
+    expect(screen.getByText(/4 measures/)).toHaveTextContent('1 notes')
+    await user.click(screen.getByRole('button', { name: 'Add rest' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('measure is full')
+    await user.click(screen.getByRole('button', { name: 'Remove last entry' }))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.getByText(/4 measures/)).toHaveTextContent('0 notes')
+  })
+  it('keeps the last valid tempo and protects unsaved edits', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Tempo' }), { target: { value: '0' } })
+    fireEvent.blur(screen.getByRole('spinbutton', { name: 'Tempo' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('Tempo')
+    expect(screen.getByRole('spinbutton', { name: 'Tempo' })).toHaveValue(100)
+    await user.click(screen.getByRole('button', { name: '+ Add measure' }))
+    vi.spyOn(window, 'confirm').mockReturnValue(false)
+    await user.click(screen.getByRole('button', { name: 'New score' }))
+    expect(screen.getByText(/5 measures/)).toBeInTheDocument()
+  })
+  it('handles save cancellation, success, failure, and validated open results', async () => {
+    const user = userEvent.setup()
+    const loaded = { ...createComposition(), title: 'Reopened piece' }
+    const saveScore = vi.fn().mockResolvedValueOnce({ status: 'cancelled' })
+      .mockResolvedValueOnce({ status: 'error', message: 'Disk full' })
+      .mockResolvedValueOnce({ status: 'ok', value: { fileName: 'piece.notation' } })
+    window.notation = {
+      saveScore, setDocumentDirty: vi.fn(),
+      openScore: vi.fn().mockResolvedValue({ status: 'ok', value: { score: loaded, fileName: 'loaded.notation' } }),
+    }
+    render(<App />)
+    await user.click(screen.getByRole('button', { name: '+ Add measure' }))
+    await user.click(screen.getByRole('button', { name: 'Save score' }))
+    expect(screen.getByText('Unsaved changes')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Save score' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('Disk full')
+    expect(screen.getByText('Unsaved changes')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Save score' }))
+    await waitFor(() => expect(screen.getByText('piece.notation')).toBeInTheDocument())
+    expect(window.notation.setDocumentDirty).toHaveBeenLastCalledWith(false)
+    await user.click(screen.getByRole('button', { name: 'Open' }))
+    expect(screen.getByLabelText('Title')).toHaveValue('Reopened piece')
+    expect(screen.getByText('loaded.notation')).toBeInTheDocument()
+  })
+  it('disables native file actions in the browser harness', () => {
+    render(<App />)
+    expect(screen.getByRole('button', { name: 'Open' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Save score' })).toBeDisabled()
+  })
+})
