@@ -454,6 +454,7 @@ export function ScoreView({
                         fill="transparent"
                         onPointerMove={() => setPreview(null)}
                         onPointerDown={(event) => {
+                          if (disabled || drawing) return
                           if (event.button === 0) {
                             event.stopPropagation()
                             event.preventDefault()

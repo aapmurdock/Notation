@@ -413,7 +413,11 @@ export function App() {
     if (key === 'arrowup' || key === 'arrowdown') {
       event.preventDefault()
       const pitch = transposeStep(cursor.pitch, key === 'arrowup' ? 1 : -1)
-      if (cursor.eventId && selection.length === 1) {
+      if (
+        cursor.eventId &&
+        selectedStaff.events.find((item) => item.id === cursor.eventId)?.kind === 'note' &&
+        selection.length === 1
+      ) {
         try {
           if (change(changePitch(score, cursor.eventId, pitch))) {
             setCursor({ ...cursor, pitch })
@@ -789,6 +793,7 @@ export function App() {
             }}
             onSignatureChange={applySignature}
             onPitchChange={(eventId, staffId, pitch) => {
+              if (busy) return
               try {
                 if (change(changePitch(score, eventId, pitch)))
                   setCursor((previous) => ({ ...previous, staffId, pitch }))

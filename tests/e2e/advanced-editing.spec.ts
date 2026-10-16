@@ -368,3 +368,23 @@ test('dotted rests and adjacent chord seconds remain individually selectable', a
   await expect(f).toHaveAttribute('aria-pressed', 'true')
   await expect(e).toHaveAttribute('aria-pressed', 'false')
 })
+
+test('rest insertion and keyboard pitch movement stay silent', async ({ page }) => {
+  await recordAudio(page)
+  await page.goto('/')
+  await ready(page)
+  await page.getByRole('button', { name: 'New score', exact: true }).click()
+  await ready(page)
+  await selectMeasure(page, 'treble')
+  await page.keyboard.press('0')
+  await ready(page)
+  await page
+    .getByRole('button', { name: 'Rest, Piano treble, measure 1, beat 1', exact: true })
+    .click()
+  await page.keyboard.press('ArrowUp')
+  await ready(page)
+  expect(await midiNotes(page)).toEqual([])
+  await expect(
+    page.getByRole('button', { name: 'Rest, Piano treble, measure 1, beat 1', exact: true }),
+  ).toHaveAttribute('data-duration', '480')
+})
