@@ -1,6 +1,8 @@
 import { defineConfig } from '@playwright/test'
 
 export default defineConfig({
+  // Keep failed assertions visible in Actions checks as well as downloadable logs.
+  reporter: process.env.GITHUB_ACTIONS ? [['list'], ['github']] : 'list',
   testDir: './tests/e2e',
   outputDir: './test-results/browser',
   fullyParallel: false,
