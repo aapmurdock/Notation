@@ -12,6 +12,11 @@ test('draws continuous grand staff systems with real aligned staff lines and res
   await page.goto('/')
   await ready(page)
   await expect(page.locator('.engraving > svg')).toHaveCount(1)
+  // Clefs repeat only at system starts, never twice or at every barline.
+  const clefs = await page.locator('.engraving text').allTextContents()
+  const initialSystems = await page.locator('.vf-score-system').count()
+  expect(clefs.filter((text) => text === '\uE050')).toHaveLength(initialSystems)
+  expect(clefs.filter((text) => text === '\uE062')).toHaveLength(initialSystems)
   const wideSystems = await page.locator('.vf-score-system').count()
   expect(await page.evaluate(() => document.fonts.check('16px Bravura'))).toBe(true)
   await page.getByLabel('New part instrument').selectOption({ label: 'Violin' })

@@ -1,74 +1,72 @@
-# Notation architecture — Milestone 2A
+# Notation architecture — Milestone 2B
 
 ## Process and data boundaries
 
 ```text
-Electron main                       Sandboxed React renderer
-  native dialogs                      document + transient cursor/selection
-  validated score file I/O             shared editing commands
-  window lifecycle                    system engraving + geometry hit testing
+Electron main                         Sandboxed React renderer
+  native dialogs                        document/history + transient interaction state
+  validated score file I/O               shared immutable editing commands
+  window lifecycle                      VexFlow systems + pointer geometry
           ↕ narrow typed IPC ↔ context-isolated preload
-                    ↕
-           shared composition model
+                         shared composition model
+                                        ↕
+                               short Web Audio audition
 ```
 
-- `src/shared/composition.ts` owns serializable musical data, constructors, migration, runtime validation, and immutable insert/delete commands. It imports neither React, Electron, nor VexFlow.
-- A composition has instrument `tracks` (parts). A part owns one or two `staves`, each with a stable ID, clef, and independent event list. A piano is one instrument with treble and bass staves, not two unrelated instrument tracks. Future playback can flatten a part's staff events into one instrument stream.
-- `src/main/` owns native dialogs and filesystem access. Paths stay in main. Saves validate again, write a sibling temporary file, then rename; validation or a failed write preserves the previous document. This is partial-write protection, not a guarantee against every filesystem/power failure.
-- `src/preload/` exposes only typed `openScore`, `saveScore`, and `setDocumentDirty` capabilities, without raw IPC, Node, shells, or arbitrary filesystem paths.
-- `src/renderer/App.tsx` owns the document plus transient entry settings, cursor, active staff, selected event ID, dirty flag, and file-operation status. Cursor/selection/preview never enter the saved model. Native file operations disable editing until they finish.
-- `src/renderer/NotationToolbar.tsx` shares duration, rest, and accidental controls between the persistent toolbar and the contextual popover.
+`src/shared/composition.ts` owns serializable musical data, constructors, migration, runtime validation, and insertion/deletion. `signatures.ts` provides the measure timeline, key metadata, and accidental resolution. `editing.ts` provides pitch/duration/signature/tie commands and bounded immutable undo/redo. These modules depend on neither React, Electron, audio, nor VexFlow.
 
-## Continuous engraving
+Each instrument part owns one or two staves with stable IDs and independent event lists. A piano is one part with treble and bass staves, allowing future playback to merge its events into one instrument stream. App owns document state and a history of up to 100 edits. Entry settings, selection, caret, drag, and audio state are transient and never saved. An edit is validated before entering history; failed commands preserve the entire previous document. A drag commits once on pointerup, so it creates at most one history step. New/Open clears history. Dirty state compares the current document with the last saved snapshot, including after undo/redo.
 
-`src/renderer/score/engrave.ts` draws one SVG containing complete horizontal systems. It does not arrange separate measure SVGs with CSS.
+Main owns native dialogs and paths. Saves validate again, write a sibling temporary file, then rename. The preload exposes only typed `openScore`, `saveScore`, and `setDocumentDirty`; no raw IPC, Node, or filesystem APIs reach the renderer. File operations disable document editing, including signature forms.
 
-1. Derive complete bar voices for every staff with `measureEvents`. Gaps become display-only rests; stored events are unchanged.
-2. Use VexFlow `Formatter.preCalculateMinTotalWidth` across all staff voices to estimate a minimum width for each measure, taking the densest rhythm/accidentals into account.
-3. `planSystems` packs consecutive measures into available width, reserves space for clefs/time signatures, and distributes remaining width. All parts use the same columns and system breaks. A single bar too dense to fit retains its minimum width and can scroll horizontally.
-4. Draw contiguous VexFlow `Stave` segments with identical line y-coordinates and exactly shared endpoints. Clefs repeat only at system starts; meter appears at the score start. `Stave.formatBegModifiers` aligns clefs/meter and note starts across parts.
-5. Join voices within each staff separately, then format all voices of a measure together. The shared tick contexts align simultaneous notes vertically, including unequal rhythms in different piano staves. Center whole-measure implicit rests without using their centered x positions as rhythmic anchors.
-6. Draw standard VexFlow barlines and `StaveConnector` braces at each grand staff's system start, and connect piano barlines through both staves. Parts share columns but retain independent staff rows.
-7. Use rendered note positions and bounds to produce transient hit-test geometry. Vertical spacing includes the score's ledger-note extents. Bravura/Academico fonts are bundled and loaded before calculating spacing; layout requires no font CDN.
+## Canonical events, chords, dots, and ties
 
-`ScoreView.tsx` observes available width with `ResizeObserver` and redraws systems when width or musical data changes. Selection, toolbar changes, and pointer movement update the interaction layer without re-engraving the score. The interaction SVG remains mounted during edits so repeated keyboard entry retains focus. Rendering failures are visible and never mutate the composition.
+Milestone 2B uses **schema version 3**. Times remain absolute integer ticks at 480 PPQ. Notes retain individual event IDs, spelled pitch, velocity, start, and duration. Chords are simultaneous note events in the same staff with identical starts and durations, rather than a rendering-owned chord object. This representation preserves each tone's identity for MIDI input, piano-roll selection, per-tone repitching, deletion, and future polyphonic recording. The current engraver groups these tones into one VexFlow `StaveNote` with multiple keys and a single rhythmic duration. Independent overlapping voices with different starts/durations remain unsupported; validation rejects them explicitly. A duration command expands to all tones in each affected chord and validates the result atomically.
 
-## Interaction and musical time
+Duration ticks include whole through sixteenth and their single-dotted values (2880, 1440, 720, 360, 180). A 60-tick duration is also supported for exact implicit gap decomposition on the 60-tick grid required by dotted sixteenths. The toolbar offers whole through sixteenth, with a separate dot toggle. Rests and notes share duration rules. No event can cross a barline or score end. Unwritten time is filled with display-only rests, never saved.
 
-`geometry.ts` is the pure adapter between staff coordinates and musical positions. The bottom treble line is E4; the bottom bass line is G2. Each half staff space maps to one diatonic pitch. Screen coordinates are transformed through the SVG's actual matrix, so scrolling, resizing, and display scaling use the same coordinate system as engraving. Pointer coordinates are resolved before moving focus, and programmatic focus uses `preventScroll`: otherwise focusing a large SVG can scroll the viewport during pointerdown and invalidate the event's original client coordinates.
+A note's optional `tieTo` points to the next adjacent note event in the same staff. Validation requires equal written step/octave and resolved MIDI pitch, with the target starting exactly at the source's end. A tie may connect different durations, cross a barline, or continue through a chain. Ties connect existing events; incompatible pitch/duration/key edits are rejected until the affected ties are removed. Deletion removes incoming dangling ties. VexFlow draws complete ties within systems and paired partial ties across system breaks.
 
-Mouse x positions snap to a duration-based grid using actual formatter tick anchors. Unwritten positions interpolate between neighboring anchors. Hover displays a pending note/rest and its pitch/beat. Clicking writes into the target staff; clicking an existing notehead/rest selects it. The caret advances by duration and skips occupied time, continuing into the next measure. Each operation specifies part ID, staff ID, and absolute tick position. Entries cannot overlap another event in the same staff or cross a barline; simultaneous events in different staves are valid.
+## Signatures and musical time
 
-Keyboard entry uses the same insertion command. Letter keys enter pitches; duration shortcuts change future entries; arrows move the pending pitch or tick. Shortcuts are scoped to the score workspace and ignore metadata inputs. Selection/deletion does not retime later music. The popover supports keyboard focus, Escape dismissal, outside-click dismissal, and focus return to the score. SVG hit targets expose measure/note/rest names and selected state to assistive technology.
+The composition stores initial `timeSignature` and `keySignature` plus sorted, unique `signatureChanges` at zero-based measure boundaries. A change can contain key, meter, or both; each applies until the next override of the same type. Changes apply across all parts, keeping barlines aligned. Supported meters are 2/4, 3/4, 4/4, and 6/8; keys include all major/minor signatures through seven sharps/flats.
 
-## File format and compatibility
+All timeline consumers use `measureStart`, `measureTicks`, `measureAtTick`, and `scoreEnd`, rather than multiplying by a uniform bar length. During a meter command, each event's original measure and offset are preserved; downstream absolute ticks adjust to the new bar lengths. IDs, spelled pitches, velocities, and durations remain unchanged. If any event would overflow its original measure, the whole command is rejected. The editor explains this behavior before Apply. Key edits never rewrite stored pitch spelling; notes following the key are intentionally sounded according to the new signature. Ties must remain valid.
 
-New saves use UTF-8 JSON with `.notation` extension and `schemaVersion: 2`:
+Pitch accidentals distinguish `''` (follow key/previous accidental), `'#'`, `'b'`, and `'n'` (explicit natural). Resolution checks the active key, then preceding explicit accidentals of the same step and octave in that staff and measure, then the note's own override. A barline resets carry. Enharmonic spelling remains intact. The same resolver supplies audition MIDI and VexFlow pitches, preventing a discrepancy between what is engraved and sounded. Minor keys use their conventional key signatures; harmonic/melodic inflections require explicit accidentals.
 
-| Field | Representation |
-| --- | --- |
-| Identity | Unique IDs for document, instrument parts, staves, and events |
-| Time | Absolute integer `startTick`, 480 ticks per quarter (`PPQ`) |
-| Duration | `durationTicks`: 1920, 960, 480, 240, 120 |
-| Pitch | Diatonic step, octave, accidental; preserves spelling and converts to MIDI |
-| Dynamics | Velocity 1–127, stored but not played |
-| Instrument part | Name, General MIDI program (zero-based), one or two staves |
-| Staff | Stable ID, treble/bass clef, sorted non-overlapping events |
-| Meter/key | 3/4 or 4/4, C major; UI creates 4/4 |
-| Rests | Explicit entered events; implicit engraving rests are not persisted |
+`SignatureEditor` is shared by sidebar and contextual forms. Targets cover actual printed signature modifiers. A visible K/T target above each bar offers keyboard/mouse access where a signature is absent. Both interfaces submit the same validated command and update the other through canonical document state. Escape, Cancel, and outside click dismiss contextual forms and return focus without scrolling.
 
-Version 1 migration preserves original document/part/event IDs, pitches, velocities, durations, and tick positions on the original clef. Legacy General MIDI program 0 piano parts receive an empty companion staff; other parts stay single-staff. Added staff IDs are deterministic and avoid collisions with existing IDs. Migration does not overwrite disk files. A subsequent explicit save writes version 2; the Milestone 1 app cannot open that new format. Unknown versions are rejected.
+## Continuous engraving and hit testing
 
-Limits remain 16 parts, 64 measures, 4096 events per staff, 30–240 BPM, and 2 MB per file. Two-staff parts must be ordered treble then bass. Each staff currently holds one monophonic voice. Chords, multiple voices in one staff, cross-staff notation, ties, tuplets, and dotted durations remain out of scope.
+`score/engrave.ts` draws one SVG of coherent horizontal systems. It derives voices, groups chord tones, resolves accidentals, and uses VexFlow's minimum widths and actual signature modifier widths to plan columns. Every part shares columns, tick formatting, and system breaks. Stave segments meet at identical endpoints; barlines are conventional. Grand staff braces appear once per piano per system, with connecting barlines. Clefs repeat only at system starts; key signatures repeat at system starts and changes; meters appear at the beginning and changes. A small `ScoreStave` adapter sets the semantic bass clef without adding an unwanted glyph on intermediate bars. Compound 6/8 beams use dotted-quarter groups.
+
+VexFlow notehead glyph bounds (excluding dot glyphs) provide per-tone hit positions. Closely spaced chord seconds receive non-overlapping vertical targets, including displaced heads. Keyboard focus remains available for every individual tone. Signature hit geometry comes from stave modifiers; a zero-width key receives an explicit target. Fonts are bundled and loaded before layout, supporting offline engraving. Ledger extents influence vertical row spacing.
+
+`ScoreView` redraws engraving only for document/width changes. Hover, selection, and drag update the overlay without reformatting music. Pointer coordinates are resolved through the actual SVG screen matrix **before focus**; all programmatic focus uses `preventScroll`, preserving the Milestone 2A Windows fix. Dragging captures the pointer on the stable root SVG and retains the original staff, tick, duration, and pointer-to-head offset. Y snaps by half a staff space through the same treble/bass pitch mapping as insertion. Only changes in snapped diatonic pitch trigger audition. Pointerup commits once; Escape, pointer cancellation, lost capture, window blur, or layout replacement cancel without mutating the score. The blue drag ghost shows the proposed note while the original engraving remains intact until commit.
+
+Duration/accidental controls edit a selection or future entry settings. Shift-click supports additive selection across staves/parts; duration edits expand chord groups. Deletion does not retime later music. Keyboard entry shares the insertion command; text inputs retain native editing shortcuts. Chord entry holds the caret at one onset; normal entry advances past occupied time.
+
+## Lightweight audition
+
+`audio/PianoAudition.ts` owns a lazily created renderer Web Audio context, one periodic waveform with piano-like harmonics, and a short attack/decay envelope. No network samples or new dependencies are needed. A new preview quickly releases the previous one, with at most two retained oscillators. After asynchronous context activation, only the latest requested pitch is scheduled. Stop/cancel invalidates pending requests; replacement/unmount releases audio resources. Audio failure is reported without preventing notation edits. Audition can be muted.
+
+This is note preview only. It does not schedule a composition, interpret tempo, produce a sustained tie, select instrument programs, or record/export audio. Automated checks verify oscillator frequencies, scheduling, and interaction triggers; they do not establish subjective piano quality or physical speaker output.
+
+## Compatibility and limits
+
+Version 1 migration preserves document/part/event IDs, notes, durations, velocities, and ticks on the original clef. Legacy piano parts receive deterministic, collision-free companion staff IDs. Version 2 migration preserves all existing music and adds an empty signature-change list. Existing C-major natural notes retain their sound. New saves use version 3, which older milestones cannot open; migration never overwrites files automatically. Unknown versions are rejected, and unknown UI fields are dropped.
+
+Limits remain 16 parts, 64 measures, 4096 events per staff, 30–240 BPM, and 2 MB per file. Grand staves must be treble then bass. Tuplets, independent overlapping voices, double accidentals/dots, cross-staff notation, and marquee selection are not implemented.
 
 ## Future integration points
 
-MIDI recording can convert device timestamps into ticks and quantize into the shared model through an explicit service/IPC boundary. A piano roll can edit the same part/staff/event IDs without depending on VexFlow. Add command history when implementing undo/redo. Future playback schedules a part's merged staff events by ticks/tempo; an isolated native VST3 host belongs outside the renderer. Offline WAV/MP3 export should consume immutable score/instrument snapshots and report progress via typed IPC. None of these engines or the remainder of Milestone 2 is implemented here.
+MIDI recording can quantize timestamped pitches into stable part/staff/event IDs and feed shared commands. Piano roll editing can consume the same absolute ticks and per-tone IDs. A future voice model can extend overlap rules without replacing chord identities. Full playback can merge staff events, resolve pitches, and join tie chains in a scheduler separate from audition. VST3 hosting belongs in an isolated native host; WAV/MP3 export should consume immutable score/instrument snapshots through typed IPC. No Milestone 3 engine is implemented here.
 
-The Electron window keeps sandboxing and context isolation enabled with Node integration disabled. Main handlers check the trusted application frame and validate score data. Permissions, new windows, and renderer navigation remain denied. Production CSP permits bundled scripts/fonts; only development relaxes inline script policy for Vite Fast Refresh. Development binds to loopback.
+Electron sandboxing, context isolation, disabled Node integration, trusted-frame checks, denied navigation/new windows/permissions, and production CSP remain in place. Development binds to loopback.
 
 ## Validation
 
-Model tests cover independent staff entry, non-overlap within a staff, bar/score boundaries, migration, and preservation of timing/identity. Geometry tests check line/space pitches in both clefs, tick snapping, and contiguous system packing. Browser tests inspect the actual VexFlow staff paths for continuity/alignment, check braces and responsive wrapping, exercise previews/direct entry/deletion, and verify keyboard duration/advancement behavior. Electron tests save/reopen independently entered grand staff music, migrate a version 1 file, reject unsupported input without losing the document, and retain the isolated bridge checks.
+Model/audio/React tests cover migrations, resolved MIDI, every supported signature, accidentals, ties, chords, dots, safe meter changes, immutable history, dirty state after undo/redo, and pending-file-operation guards. Geometry tests cover line/space pitches, rhythmic snapping, and system packing. Browser tests inspect actual painted VexFlow paths and glyphs, actual Web Audio frequency scheduling, pointer dragging/cancellation, repeated-pitch suppression, signature synchronization, chord seconds, batch deletion, undo/redo, dots, and ties across system breaks. Desktop tests exercise native file round trips, isolation, legacy migration, scaled/scrolled insertion and dragging, and exact restoration of complex edits.
 
-CI runs build/tests on Ubuntu and Windows. Local cloud validation uses Linux; it does not establish a Windows CI pass or replace manual Windows 11 evaluation. Native file dialog destinations are substituted in automated tests; the OS dialog UI itself is a manual check. No audio/MIDI hardware tests or installer packaging is included.
+CI runs these checks on Ubuntu and Windows. OS dialog UI and physical audio output remain Windows 11 manual checks. There are no MIDI/VST3/audio-export or installer tests in this milestone.
