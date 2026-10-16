@@ -1,7 +1,19 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
-import { ticksPerMeasure, type Composition, type Pitch } from '../../shared/composition'
+import { type Composition, type Pitch } from '../../shared/composition'
 import { NotationToolbar, type EntrySettings } from '../NotationToolbar'
 import { engrave, type Engraving, type StaffMeasure } from './engrave'
+import { SignatureEditor } from '../SignatureEditor'
+import {
+  measureAtTick,
+  measureStart,
+  measureTicks,
+  scoreEnd,
+  signatureAt,
+  timeName,
+  keyName,
+  type KeySignature,
+  type TimeSignature,
+} from '../../shared/signatures'
 import { pitchAtY, tickAtX, xForTick, yForPitch } from './geometry'
 
 export interface ScoreCursor {
@@ -10,6 +22,7 @@ export interface ScoreCursor {
   tick: number
   pitch: Pitch
   eventId?: string
+  selectedIds?: string[]
 }
 interface Preview {
   measure: StaffMeasure
@@ -25,6 +38,10 @@ export function ScoreView({
   onSelect,
   onInsert,
   onSettings,
+  onPitchChange,
+  onAudition,
+  onStopAudition,
+  onSignatureChange,
 }: {
   score: Composition
   cursor: ScoreCursor
@@ -32,7 +49,14 @@ export function ScoreView({
   disabled: boolean
   onSelect(cursor: ScoreCursor): void
   onInsert(cursor: ScoreCursor, rest?: boolean): void
-  onSettings(settings: EntrySettings): void
+  onSettings(settings: EntrySettings, field?: keyof EntrySettings): void
+  onPitchChange(eventId: string, staffId: string, pitch: Pitch): void
+  onAudition(staffId: string, tick: number, pitch: Pitch, eventId?: string): void
+  onStopAudition(): void
+  onSignatureChange(
+    measure: number,
+    change: { keySignature?: KeySignature; timeSignature?: TimeSignature },
+  ): void
 }) {
   const viewport = useRef<HTMLDivElement>(null)
   const container = useRef<HTMLDivElement>(null)
@@ -44,7 +68,53 @@ export function ScoreView({
   const [preview, setPreview] = useState<Preview | null>(null)
   const [popover, setPopover] = useState<{ left: number; top: number } | null>(null)
   const popoverRef = useRef<HTMLDivElement>(null)
-  const barTicks = ticksPerMeasure(score)
+  const [drag, setDrag] = useState<{
+    pointerId: number
+    measure: StaffMeasure
+    item: StaffMeasure['events'][number]
+    pitch: Pitch
+    offsetY: number
+  } | null>(null)
+  const dragging = useRef(drag)
+  function updateDrag(next: typeof drag): void {
+    dragging.current = next
+    setDrag(next)
+  }
+  function cancelDrag(): void {
+    const current = dragging.current
+    updateDrag(null)
+    if (current && interaction.current?.hasPointerCapture(current.pointerId))
+      interaction.current.releasePointerCapture(current.pointerId)
+    onStopAudition()
+  }
+  useEffect(() => {
+    const cancel = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape' && dragging.current) {
+        event.preventDefault()
+        event.stopPropagation()
+        cancelDrag()
+      }
+    }
+    const blur = (): void => {
+      if (dragging.current) cancelDrag()
+    }
+    window.addEventListener('keydown', cancel, true)
+    window.addEventListener('blur', blur)
+    return () => {
+      window.removeEventListener('keydown', cancel, true)
+      window.removeEventListener('blur', blur)
+    }
+  })
+  const [signatureEditor, setSignatureEditor] = useState<{
+    measure: number
+    kind: 'key' | 'time'
+    left: number
+    top: number
+  } | null>(null)
+  function closeSignature(): void {
+    setSignatureEditor(null)
+    interaction.current?.focus({ preventScroll: true })
+  }
 
   useEffect(() => {
     const observer = new ResizeObserver(([entry]) => {
@@ -59,6 +129,8 @@ export function ScoreView({
     setDrawing(true)
     setPreview(null)
     setPopover(null)
+    setSignatureEditor(null)
+    if (dragging.current) cancelDrag()
     async function draw(): Promise<void> {
       try {
         await Promise.all([
@@ -107,9 +179,9 @@ export function ScoreView({
       tick: tickAtX(
         measure.anchors,
         position.x,
-        measure.measure * barTicks,
-        barTicks,
-        settings.duration,
+        measureStart(score, measure.measure),
+        measureTicks(score, measure.measure),
+        settings.dotted ? settings.duration * 1.5 : settings.duration,
       ),
       pitch: pitchAtY(
         position.y,
@@ -124,13 +196,13 @@ export function ScoreView({
     if (disabled) return
     onSelect(
       cursor.staffId === measure.staffId &&
-        Math.floor(cursor.tick / barTicks) === measure.measure &&
+        measureAtTick(score, cursor.tick) === measure.measure &&
         !cursor.eventId
         ? cursor
         : {
             trackId: measure.trackId,
             staffId: measure.staffId,
-            tick: measure.measure * barTicks,
+            tick: measureStart(score, measure.measure),
             pitch: {
               step: 'C',
               octave: measure.clef === 'bass' ? 3 : 4,
@@ -145,29 +217,47 @@ export function ScoreView({
         top: measure.top - 14,
       })
   }
-  function selectEvent(measure: StaffMeasure, item: StaffMeasure['events'][number]): void {
+  function selectEvent(
+    measure: StaffMeasure,
+    item: StaffMeasure['events'][number],
+    additive = false,
+  ): void {
     if (disabled) return
     interaction.current?.focus({ preventScroll: true })
     setPopover(null)
     setPreview(null)
+    const previous = cursor.selectedIds ?? (cursor.eventId ? [cursor.eventId] : [])
+    const ids = additive
+      ? previous.includes(item.event.id)
+        ? previous.filter((id) => id !== item.event.id)
+        : [...previous, item.event.id]
+      : [item.event.id]
+    const activeId = ids.includes(item.event.id) ? item.event.id : ids.at(-1)
+    const active = layout?.measures
+      .flatMap((measure) => measure.events.map((item) => ({ measure, item })))
+      .find(({ item }) => item.event.id === activeId)
+    const entry = active?.item ?? item
+    const staff = active?.measure ?? measure
     onSelect({
-      trackId: measure.trackId,
-      staffId: measure.staffId,
-      tick: item.event.startTick,
-      pitch: item.event.kind === 'note' ? item.event.pitch : cursor.pitch,
-      eventId: item.event.id,
+      trackId: staff.trackId,
+      staffId: staff.staffId,
+      tick: entry.event.startTick,
+      pitch: entry.event.kind === 'note' ? entry.event.pitch : cursor.pitch,
+      eventId: activeId,
+      selectedIds: ids,
     })
   }
   const cursorMeasure = layout?.measures.find(
     (measure) =>
       measure.staffId === cursor.staffId &&
-      measure.measure === Math.min(score.measureCount - 1, Math.floor(cursor.tick / barTicks)),
+      measure.measure === Math.min(score.measureCount - 1, measureAtTick(score, cursor.tick)),
   )
-  const hovered =
-    settings.mode === 'write' && !disabled && !drawing
+  const hovered = drag
+    ? { measure: drag.measure, tick: drag.item.event.startTick, pitch: drag.pitch }
+    : settings.mode === 'write' && !disabled && !drawing
       ? preview
         ? { ...preview, pitch: { ...preview.pitch, accidental: settings.accidental } }
-        : cursorMeasure && !cursor.eventId && cursor.tick < score.measureCount * barTicks
+        : cursorMeasure && !cursor.eventId && cursor.tick < scoreEnd(score)
           ? {
               measure: cursorMeasure,
               tick: cursor.tick,
@@ -184,17 +274,14 @@ export function ScoreView({
         hovered.measure.clef,
       )
     : 0
-  const selected = layout?.measures
-    .flatMap((measure) => measure.events)
-    .find(({ event }) => event.id === cursor.eventId)
 
   return (
     <article className="score-page" aria-label="Sheet music">
       <header className="score-heading">
-        <p className="eyebrow">FULL SCORE · {score.keySignature} MAJOR</p>
+        <p className="eyebrow">FULL SCORE · {keyName(score.keySignature)}</p>
         <h2>{score.title}</h2>
         <p>
-          ♩ = {score.tempoBpm} <span>•</span> {score.timeSignature.numerator}/4
+          ♩ = {score.tempoBpm} <span>•</span> {timeName(score.timeSignature)}
         </p>
       </header>
       <div ref={viewport} className="score-viewport">
@@ -213,6 +300,46 @@ export function ScoreView({
               role="group"
               aria-label="Interactive score"
               onPointerLeave={() => setPreview(null)}
+              onPointerMove={(event) => {
+                const current = dragging.current
+                if (!current || current.pointerId !== event.pointerId) return
+                const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(
+                  interaction.current!.getScreenCTM()!.inverse(),
+                )
+                const pitch = pitchAtY(
+                  point.y - current.offsetY,
+                  current.measure.bottom,
+                  current.measure.spacing,
+                  current.measure.clef,
+                  current.pitch.accidental,
+                )
+                if (pitch.step !== current.pitch.step || pitch.octave !== current.pitch.octave) {
+                  updateDrag({ ...current, pitch })
+                  onAudition(
+                    current.measure.staffId,
+                    current.item.event.startTick,
+                    pitch,
+                    current.item.event.id,
+                  )
+                }
+              }}
+              onPointerUp={(event) => {
+                const current = dragging.current
+                if (!current || current.pointerId !== event.pointerId) return
+                updateDrag(null)
+                if (interaction.current?.hasPointerCapture(event.pointerId))
+                  interaction.current.releasePointerCapture(event.pointerId)
+                if (
+                  current.item.event.kind === 'note' &&
+                  (current.pitch.step !== current.item.event.pitch.step ||
+                    current.pitch.octave !== current.item.event.pitch.octave)
+                )
+                  onPitchChange(current.item.event.id, current.measure.staffId, current.pitch)
+              }}
+              onPointerCancel={cancelDrag}
+              onLostPointerCapture={() => {
+                if (dragging.current) cancelDrag()
+              }}
             >
               {layout.measures.map((measure) => {
                 const active =
@@ -292,21 +419,66 @@ export function ScoreView({
                         className="event-hit"
                         role="button"
                         tabIndex={disabled ? -1 : 0}
-                        aria-label={`${item.event.kind === 'note' ? `${item.event.pitch.step}${item.event.pitch.accidental}${item.event.pitch.octave} note` : 'Rest'}, ${measure.name} ${measure.clef}, measure ${measure.measure + 1}, beat ${(item.event.startTick % barTicks) / 480 + 1}`}
-                        aria-pressed={item.event.id === cursor.eventId}
+                        aria-label={`${item.event.kind === 'note' ? `${item.event.pitch.step}${item.event.pitch.accidental === 'n' ? '♮' : item.event.pitch.accidental}${item.event.pitch.octave} note` : 'Rest'}, ${measure.name} ${measure.clef}, measure ${measure.measure + 1}, beat ${(item.event.startTick - measureStart(score, measure.measure)) / 480 + 1}`}
+                        aria-pressed={
+                          cursor.selectedIds
+                            ? cursor.selectedIds.includes(item.event.id)
+                            : item.event.id === cursor.eventId
+                        }
                         data-event-id={item.event.id}
                         data-tick={item.event.startTick}
-                        x={item.x - 10}
-                        y={item.y - 10}
-                        width={28}
-                        height={22}
+                        data-duration={item.event.durationTicks}
+                        x={item.x - 3}
+                        y={
+                          item.y -
+                          (measure.events.some(
+                            (other) =>
+                              other.event.startTick === item.event.startTick &&
+                              other.event.id !== item.event.id &&
+                              Math.abs(other.y - item.y) < 10,
+                          )
+                            ? 2.4
+                            : 7)
+                        }
+                        width={17}
+                        height={
+                          measure.events.some(
+                            (other) =>
+                              other.event.startTick === item.event.startTick &&
+                              other.event.id !== item.event.id &&
+                              Math.abs(other.y - item.y) < 10,
+                          )
+                            ? 4.8
+                            : 14
+                        }
                         fill="transparent"
                         onPointerMove={() => setPreview(null)}
                         onPointerDown={(event) => {
                           if (event.button === 0) {
                             event.stopPropagation()
                             event.preventDefault()
-                            selectEvent(measure, item)
+                            const position = new DOMPoint(
+                              event.clientX,
+                              event.clientY,
+                            ).matrixTransform(interaction.current!.getScreenCTM()!.inverse())
+                            selectEvent(measure, item, event.shiftKey)
+                            if (item.event.kind === 'note' && !event.shiftKey) {
+                              updateDrag({
+                                pointerId: event.pointerId,
+                                measure,
+                                item,
+                                pitch: item.event.pitch,
+                                offsetY:
+                                  position.y -
+                                  yForPitch(
+                                    item.event.pitch,
+                                    measure.bottom,
+                                    measure.spacing,
+                                    measure.clef,
+                                  ),
+                              })
+                              interaction.current!.setPointerCapture(event.pointerId)
+                            }
                           }
                         }}
                         onKeyDown={(event) => {
@@ -318,6 +490,58 @@ export function ScoreView({
                         }}
                       />
                     ))}
+                    {measure.signatures.map((signature) => {
+                      const activeSignature = signatureAt(score, measure.measure)
+                      const label = `${signature.kind === 'key' ? 'Key' : 'Time'} signature, ${measure.name} ${measure.clef}, measure ${measure.measure + 1}: ${signature.kind === 'key' ? keyName(activeSignature.keySignature) : timeName(activeSignature.timeSignature)}`
+                      const open = (): void => {
+                        if (disabled || drawing) return
+                        setPopover(null)
+                        setPreview(null)
+                        setSignatureEditor({
+                          measure: measure.measure,
+                          kind: signature.kind,
+                          left: Math.min(signature.x, Math.max(0, layout.width - 270)),
+                          top: measure.top + 50,
+                        })
+                      }
+                      return (
+                        <g key={signature.kind}>
+                          {signature.empty && (
+                            <text
+                              x={signature.x + 3}
+                              y={signature.y + 11}
+                              className="signature-hint"
+                              pointerEvents="none"
+                            >
+                              {signature.kind === 'key' ? 'K' : 'T'}
+                            </text>
+                          )}
+                          <rect
+                            className="signature-target"
+                            role="button"
+                            tabIndex={disabled ? -1 : 0}
+                            aria-label={label}
+                            x={signature.x}
+                            y={signature.y}
+                            width={signature.width}
+                            height={signature.height}
+                            fill="transparent"
+                            onPointerDown={(event) => {
+                              event.preventDefault()
+                              event.stopPropagation()
+                              open()
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault()
+                                event.stopPropagation()
+                                open()
+                              }
+                            }}
+                          />
+                        </g>
+                      )
+                    })}
                   </g>
                 )
               })}
@@ -331,16 +555,24 @@ export function ScoreView({
                   y2={cursorMeasure.bottom + 10}
                 />
               )}
-              {selected && (
-                <ellipse
-                  className="selected-entry"
-                  pointerEvents="none"
-                  cx={selected.x + 4}
-                  cy={selected.y}
-                  rx={13}
-                  ry={11}
-                />
-              )}
+              {layout.measures
+                .flatMap((measure) => measure.events)
+                .filter((item) =>
+                  (cursor.selectedIds ?? (cursor.eventId ? [cursor.eventId] : [])).includes(
+                    item.event.id,
+                  ),
+                )
+                .map((selected) => (
+                  <ellipse
+                    key={selected.event.id}
+                    className="selected-entry"
+                    pointerEvents="none"
+                    cx={selected.x + 4}
+                    cy={selected.y}
+                    rx={13}
+                    ry={11}
+                  />
+                ))}
               {hovered && (
                 <g
                   className="note-preview"
@@ -356,10 +588,17 @@ export function ScoreView({
                     y2={hovered.measure.bottom + 10}
                     className="preview-guide"
                   />
-                  {Array.from({ length: 10 }, (_, i) => [
-                    hovered.measure.top - (i + 1) * 10,
-                    hovered.measure.bottom + (i + 1) * 10,
-                  ])
+                  {Array.from(
+                    {
+                      length: Math.ceil(
+                        Math.max(hovered.measure.top - py, py - hovered.measure.bottom, 0) / 10,
+                      ),
+                    },
+                    (_, i) => [
+                      hovered.measure.top - (i + 1) * 10,
+                      hovered.measure.bottom + (i + 1) * 10,
+                    ],
+                  )
                     .flat()
                     .filter(
                       (y) =>
@@ -369,7 +608,7 @@ export function ScoreView({
                     .map((y) => (
                       <line key={y} x1={px - 7} x2={px + 17} y1={y} y2={y} stroke="currentColor" />
                     ))}
-                  {settings.rest ? (
+                  {settings.rest && !drag ? (
                     <text x={px - 6} y={py + 4} fontSize={14}>
                       rest
                     </text>
@@ -385,6 +624,9 @@ export function ScoreView({
                         stroke="currentColor"
                         strokeWidth={1.6}
                       />
+                      {settings.dotted && (
+                        <circle cx={px + 15} cy={py - 2} r={1.8} fill="currentColor" />
+                      )}
                       {settings.duration < 1920 && (
                         <line
                           x1={px + 9}
@@ -398,14 +640,31 @@ export function ScoreView({
                     </>
                   )}
                   <text className="preview-label" x={px - 8} y={hovered.measure.bottom + 33}>
-                    {settings.rest
+                    {settings.rest && !drag
                       ? 'Rest'
                       : `${hovered.pitch.step}${hovered.pitch.accidental}${hovered.pitch.octave}`}{' '}
-                    · beat {(hovered.tick % barTicks) / 480 + 1}
+                    · beat {(hovered.tick - measureStart(score, hovered.measure.measure)) / 480 + 1}
                   </text>
                 </g>
               )}
             </svg>
+          )}
+          {signatureEditor && (
+            <div
+              className="measure-popover signature-popover"
+              role="dialog"
+              aria-label={`${signatureEditor.kind === 'key' ? 'Key' : 'Time'} signature editor`}
+              style={{ left: signatureEditor.left, top: signatureEditor.top }}
+            >
+              <SignatureEditor
+                disabled={disabled}
+                score={score}
+                measure={signatureEditor.measure}
+                kind={signatureEditor.kind}
+                onChange={onSignatureChange}
+                onClose={closeSignature}
+              />
+            </div>
           )}
           {popover && (
             <div
@@ -431,8 +690,8 @@ export function ScoreView({
                 compact
                 settings={settings}
                 disabled={disabled}
-                onChange={(next) => {
-                  onSettings(next)
+                onChange={(next, field) => {
+                  onSettings(next, field)
                   setPopover(null)
                   interaction.current?.focus({ preventScroll: true })
                 }}
@@ -447,7 +706,7 @@ export function ScoreView({
         </p>
       )}
       <footer className="score-footer">
-        NOTATION <span>Continuous score · Milestone 2A</span>
+        NOTATION <span>Interactive composition · Milestone 2B</span>
       </footer>
     </article>
   )

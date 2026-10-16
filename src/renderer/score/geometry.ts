@@ -44,17 +44,34 @@ export interface SystemLayout {
 }
 
 /** Pack engraving-engine minimums into systems, sharing every column across all parts. */
-export function planSystems(minimums: number[], availableWidth: number): SystemLayout[] {
+export function planSystems(
+  minimums: number[],
+  availableWidth: number,
+  headers?: { start: number; middle: number }[],
+): SystemLayout[] {
   const left = 86
   const right = 16
-  const width = Math.max(availableWidth, left + right + Math.max(...minimums) + 84)
+  const width = Math.max(
+    availableWidth,
+    left +
+      right +
+      Math.max(...minimums.map((minimum, index) => minimum + (headers?.[index]?.start ?? 84))),
+  )
   const systems: SystemLayout[] = []
   let measure = 0
   while (measure < minimums.length) {
     const columns: Column[] = []
     let used = left + right
     while (measure < minimums.length) {
-      const header = columns.length === 0 ? (measure === 0 ? 84 : 58) : 0
+      const header = headers
+        ? columns.length === 0
+          ? headers[measure]!.start
+          : headers[measure]!.middle
+        : columns.length === 0
+          ? measure === 0
+            ? 84
+            : 58
+          : 0
       const minimum = minimums[measure]! + header
       if (columns.length && used + minimum > width) break
       columns.push({ measure, x: used - right, width: minimum, header })

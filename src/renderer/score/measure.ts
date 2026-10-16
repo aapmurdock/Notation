@@ -1,24 +1,19 @@
-import {
-  DURATIONS,
-  ticksPerMeasure,
-  type Composition,
-  type ScoreEvent,
-  type Staff,
-} from '../../shared/composition'
+import { DURATIONS, type Composition, type ScoreEvent, type Staff } from '../../shared/composition'
+import { measureStart, measureTicks } from '../../shared/signatures'
 
 export type DisplayEvent = ScoreEvent & { implicit?: boolean }
 
 /** Fill gaps for engraving only. Implicit rests never alter the composition. */
 export function measureEvents(score: Composition, staff: Staff, measure: number): DisplayEvent[] {
-  const length = ticksPerMeasure(score)
-  const start = measure * length
+  const length = measureTicks(score, measure)
+  const start = measureStart(score, measure)
   const result: DisplayEvent[] = []
   let cursor = start
   const fillTo = (end: number): void => {
     while (cursor < end) {
-      const durationTicks = DURATIONS.find(
-        (duration) => duration <= end - cursor && (cursor - start) % duration === 0,
-      )
+      const durationTicks = DURATIONS.filter((duration) =>
+        [1920, 960, 480, 240, 120, 60].includes(duration),
+      ).find((duration) => duration <= end - cursor && (cursor - start) % duration === 0)
       if (!durationTicks) throw new Error('Cannot render an event outside the sixteenth-note grid.')
       result.push({
         id: `rest-${cursor}`,
