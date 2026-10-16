@@ -3,6 +3,9 @@ import {
   Barline,
   Beam,
   Formatter,
+  Fraction,
+  Dot,
+  StaveTie,
   Renderer,
   Stave,
   StaveConnector,
@@ -10,16 +13,31 @@ import {
   Voice,
 } from 'vexflow/bravura'
 import {
-  ticksPerMeasure,
+  isDotted,
+  baseDuration,
   type Composition,
   type ScoreEvent,
   type Staff,
   type Track,
 } from '../../shared/composition'
 import { bottomPitch, diatonic, planSystems, type TickAnchor } from './geometry'
-import { measureEvents } from './measure'
+import { measureEvents, type DisplayEvent } from './measure'
+import {
+  measureStart,
+  measureTicks,
+  resolvedPitch,
+  signatureAt,
+  timeName,
+} from '../../shared/signatures'
 
-const durations: Record<number, string> = { 1920: 'w', 960: 'h', 480: 'q', 240: '8', 120: '16' }
+const durations: Record<number, string> = {
+  1920: 'w',
+  960: 'h',
+  480: 'q',
+  240: '8',
+  120: '16',
+  60: '32',
+}
 interface Row {
   track: Track
   staff: Staff
@@ -49,6 +67,14 @@ export interface StaffMeasure {
   spacing: number
   anchors: TickAnchor[]
   events: EngravedEvent[]
+  signatures: {
+    kind: 'key' | 'time'
+    x: number
+    y: number
+    width: number
+    height: number
+    empty: boolean
+  }[]
 }
 export interface Engraving {
   width: number
@@ -58,29 +84,90 @@ export interface Engraving {
 }
 
 function createVoice(score: Composition, staff: Staff, measure: number) {
-  const events = measureEvents(score, staff, measure)
-  const notes = events.map(
-    (event) =>
-      new StaveNote({
-        clef: staff.clef,
-        keys: [
-          event.kind === 'note'
-            ? `${event.pitch.step.toLowerCase()}${event.pitch.accidental}/${event.pitch.octave}`
-            : staff.clef === 'bass'
-              ? 'd/3'
-              : 'b/4',
-        ],
-        duration: `${durations[event.durationTicks]}${event.kind === 'rest' ? 'r' : ''}`,
-        alignCenter:
-          event.kind === 'rest' && event.implicit && event.durationTicks === ticksPerMeasure(score),
-        autoStem: true,
+  const groups: DisplayEvent[][] = []
+  for (const event of measureEvents(score, staff, measure)) {
+    const previous = groups.at(-1)
+    if (
+      event.kind === 'note' &&
+      previous?.[0]?.kind === 'note' &&
+      previous[0].startTick === event.startTick
+    )
+      previous.push(event)
+    else groups.push([event])
+  }
+  // VexFlow orders noteheads diatonically; keep that same order for per-tone hit testing/ties.
+  for (const group of groups)
+    group.sort((a, b) =>
+      a.kind === 'note' && b.kind === 'note' ? diatonic(a.pitch) - diatonic(b.pitch) : 0,
+    )
+  const notes = groups.map((group) => {
+    const event = group[0]!
+    const note = new StaveNote({
+      clef: staff.clef,
+      keys: group.map((event) => {
+        if (event.kind === 'rest') return staff.clef === 'bass' ? 'd/3' : 'b/4'
+        const pitch = resolvedPitch(score, staff, event.startTick, event.pitch)
+        return `${pitch.step.toLowerCase()}${pitch.accidental}/${pitch.octave}`
       }),
-  )
-  const voice = new Voice({ numBeats: score.timeSignature.numerator, beatValue: 4 }).addTickables(
+      duration: `${durations[baseDuration(event.durationTicks)]}${event.kind === 'rest' ? 'r' : ''}`,
+      dots: isDotted(event.durationTicks) ? 1 : 0,
+      alignCenter:
+        event.kind === 'rest' &&
+        !!event.implicit &&
+        event.durationTicks === measureTicks(score, measure),
+      autoStem: true,
+    })
+    if (isDotted(event.durationTicks)) Dot.buildAndAttach([note], { all: true })
+    return note
+  })
+  const signature = signatureAt(score, measure)
+  const voice = new Voice({
+    numBeats: signature.timeSignature.numerator,
+    beatValue: signature.timeSignature.denominator,
+  }).addTickables(notes)
+  Accidental.applyAccidentals([voice], signature.keySignature)
+  return {
+    voice,
     notes,
-  )
-  Accidental.applyAccidentals([voice], score.keySignature)
-  return { voice, notes, events, beams: Beam.generateBeams(notes) }
+    groups,
+    beams: Beam.generateBeams(
+      notes,
+      signature.timeSignature.denominator === 8 ? { groups: [new Fraction(3, 8)] } : {},
+    ),
+  }
+}
+
+/** Set the semantic clef without adding a repeated clef glyph to every measure. */
+class ScoreStave extends Stave {
+  constructor(clef: Staff['clef'], x: number, y: number, width: number) {
+    super(x, y, width)
+    this.clef = clef
+  }
+}
+
+function makeStave(
+  score: Composition,
+  clef: Staff['clef'],
+  measure: number,
+  first: boolean,
+  x: number,
+  y: number,
+  width: number,
+): Stave {
+  const stave = new ScoreStave(clef, x, y, width)
+  if (first) stave.addClef(clef)
+  const signature = signatureAt(score, measure)
+  const previous = signatureAt(score, Math.max(0, measure - 1))
+  if (first || signature.keySignature !== previous.keySignature)
+    stave.addKeySignature(
+      signature.keySignature,
+      measure && signature.keySignature !== previous.keySignature
+        ? previous.keySignature
+        : undefined,
+    )
+  if (measure === 0 || timeName(signature.timeSignature) !== timeName(previous.timeSignature))
+    stave.addTimeSignature(timeName(signature.timeSignature))
+  return stave
 }
 
 function staffRows(score: Composition): { rows: Row[]; height: number } {
@@ -118,6 +205,10 @@ export function engrave(
     for (const { voice } of voices) formatter.joinVoices([voice])
     return {
       voices,
+      headers: {
+        start: makeStave(score, 'treble', measure, true, 0, 0, 500).getNoteStartX() + 18,
+        middle: makeStave(score, 'treble', measure, false, 0, 0, 500).getNoteStartX() + 18,
+      },
       minimum: Math.max(
         112,
         formatter.preCalculateMinTotalWidth(voices.map((item) => item.voice)) + 34,
@@ -127,6 +218,7 @@ export function engrave(
   const systems = planSystems(
     prepared.map((item) => item.minimum),
     availableWidth,
+    prepared.map((item) => item.headers),
   )
   const width = systems[0]!.width
   const height = systems.length * systemHeight
@@ -134,7 +226,7 @@ export function engrave(
   renderer.resize(width, height)
   const context = renderer.getContext()
   const measures: StaffMeasure[] = []
-  const barTicks = ticksPerMeasure(score)
+  const rendered = new Map<string, { note: StaveNote; index: number; system: number }>()
 
   systems.forEach((system, systemIndex) => {
     const group = context.openGroup('score-system')
@@ -145,13 +237,19 @@ export function engrave(
     system.columns.forEach((column, columnIndex) => {
       const bar = prepared[column.measure]!
       const staves = rows.map((row) => {
-        const stave = new Stave(column.x, row.top + yOffset - 40, column.width)
+        const stave = makeStave(
+          score,
+          row.staff.clef,
+          column.measure,
+          columnIndex === 0,
+          column.x,
+          row.top + yOffset - 40,
+          column.width,
+        )
         stave.setBegBarType(Barline.type.NONE)
         stave.setEndBarType(
           column.measure === score.measureCount - 1 ? Barline.type.END : Barline.type.SINGLE,
         )
-        if (columnIndex === 0) stave.addClef(row.staff.clef)
-        if (column.measure === 0) stave.addTimeSignature(`${score.timeSignature.numerator}/4`)
         return stave
       })
       Stave.formatBegModifiers(staves)
@@ -173,14 +271,15 @@ export function engrave(
         { context },
       )
       const tickXs = new Map<number, number>()
-      bar.voices.forEach(({ voice, notes, events, beams }, rowIndex) => {
+      bar.voices.forEach(({ voice, notes, groups, beams }, rowIndex) => {
         const stave = staves[rowIndex]!
         voice.draw(context, stave)
         beams.forEach((beam) => beam.setContext(context).draw())
         const row = rows[rowIndex]!
         const engravedEvents: EngravedEvent[] = []
         notes.forEach((note, index) => {
-          const event = events[index]!
+          const group = groups[index]!
+          const event = group[0]!
           // Whole-measure rests are visually centered, but their rhythmic tick remains at the start.
           tickXs.set(event.startTick, note.getAbsoluteX() - note.getCenterXShift())
           const svg = note.getSVGElement()
@@ -188,18 +287,27 @@ export function engrave(
           svg?.setAttribute('data-staff-id', row.staff.id)
           if (!event.implicit) {
             svg?.setAttribute('data-event-id', event.id)
-            const box = note.getBoundingBox()
-            engravedEvents.push({
-              event,
-              x: note.getAbsoluteX(),
-              y: note.getYs()[0]!,
-              left: box.x,
-              top: box.y,
-              width: box.w,
-              height: box.h,
-            })
+            svg?.setAttribute('data-chord-size', String(group.length))
+            const heads = svg?.querySelectorAll<SVGGraphicsElement>('.vf-notehead')
+            for (const [toneIndex, tone] of group.entries()) {
+              const head = heads?.[toneIndex]?.querySelector<SVGGraphicsElement>('text')?.getBBox()
+              const box = note.getBoundingBox()
+              rendered.set(tone.id, { note, index: toneIndex, system: systemIndex })
+              engravedEvents.push({
+                event: tone,
+                x: head ? head.x + head.width / 2 - 4 : note.getAbsoluteX(),
+                y: note.getYs()[toneIndex] ?? note.getYs()[0]!,
+                left: box.x,
+                top: box.y,
+                width: box.w,
+                height: box.h,
+              })
+            }
           }
         })
+        // An empty C signature still has an engine modifier after the clef. Allocate
+        // placeholder targets sequentially so an absent meter cannot cover that key target.
+        let signatureRight = column.x + 5
         measures.push({
           trackId: row.track.id,
           staffId: row.staff.id,
@@ -214,9 +322,31 @@ export function engrave(
           spacing: stave.getSpacingBetweenLines(),
           anchors: [],
           events: engravedEvents,
+          signatures: (['key', 'time'] as const).map((kind) => {
+            const modifier = stave
+              .getModifiers()
+              .find(
+                (item) =>
+                  item.getCategory() === (kind === 'key' ? 'KeySignature' : 'TimeSignature'),
+              )
+            const empty = !modifier || modifier.getWidth() === 0
+            const width = empty ? 20 : Math.max(16, modifier.getWidth())
+            const x = empty
+              ? Math.max(modifier?.getX() ?? signatureRight, signatureRight)
+              : modifier.getX()
+            signatureRight = Math.max(signatureRight, x + width + 4)
+            return {
+              kind,
+              x,
+              y: empty ? stave.getYForLine(0) - 21 : stave.getYForLine(0) - 4,
+              width,
+              height: empty ? 15 : 48,
+              empty,
+            }
+          }),
         })
       })
-      const endTick = (column.measure + 1) * barTicks
+      const endTick = measureStart(score, column.measure + 1)
       tickXs.set(endTick, staves[0]!.getNoteEndX() - 10)
       const anchors = [...tickXs].map(([tick, x]) => ({ tick, x })).sort((a, b) => a.tick - b.tick)
       for (const measure of measures.slice(-rows.length)) measure.anchors = anchors
@@ -262,6 +392,38 @@ export function engrave(
     })
     context.closeGroup()
   })
+  for (const track of score.tracks)
+    for (const staff of track.staves)
+      for (const event of staff.events)
+        if (event.kind === 'note' && event.tieTo) {
+          const from = rendered.get(event.id)!,
+            to = rendered.get(event.tieTo)!
+          const group = context.openGroup('notation-tie')
+          group.setAttribute('data-from', event.id)
+          group.setAttribute('data-to', event.tieTo)
+          if (from.system === to.system) {
+            new StaveTie({
+              firstNote: from.note,
+              lastNote: to.note,
+              firstIndexes: [from.index],
+              lastIndexes: [to.index],
+            })
+              .setContext(context)
+              .draw()
+          } else {
+            new StaveTie({
+              firstNote: from.note,
+              firstIndexes: [from.index],
+              lastIndexes: [from.index],
+            })
+              .setContext(context)
+              .draw()
+            new StaveTie({ lastNote: to.note, firstIndexes: [to.index], lastIndexes: [to.index] })
+              .setContext(context)
+              .draw()
+          }
+          context.closeGroup()
+        }
   container.style.removeProperty('width')
   const svg = container.querySelector('svg')!
   svg.style.removeProperty('width')

@@ -95,7 +95,7 @@ describe('composition model', () => {
     [
       'key',
       (score: Record<string, unknown>) => {
-        score.keySignature = 'G'
+        score.keySignature = 'H'
       },
     ],
     [
@@ -114,7 +114,7 @@ describe('composition model', () => {
     const score = createExample()
     const event = score.tracks[0]!.staves[0]!.events[1]!
     const invalidEvents = [
-      { ...event, startTick: 0 },
+      { ...event, startTick: 0, durationTicks: 960 },
       { ...event, startTick: 481 },
       { ...event, durationTicks: 333 },
       { ...event, startTick: 1800 },

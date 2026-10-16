@@ -4,6 +4,8 @@ export interface EntrySettings {
   duration: DurationTicks
   rest: boolean
   accidental: Pitch['accidental']
+  dotted?: boolean
+  chord?: boolean
   mode: 'write' | 'select'
 }
 export const durationChoices = [
@@ -41,7 +43,7 @@ export function NotationToolbar({
   compact = false,
 }: {
   settings: EntrySettings
-  onChange(settings: EntrySettings): void
+  onChange(settings: EntrySettings, field?: keyof EntrySettings): void
   disabled?: boolean
   compact?: boolean
 }) {
@@ -79,7 +81,7 @@ export function NotationToolbar({
             aria-label={`${name} duration`}
             aria-pressed={settings.duration === ticks}
             title={`${name} (${key})`}
-            onClick={() => onChange({ ...settings, duration: ticks, mode: 'write' })}
+            onClick={() => onChange({ ...settings, duration: ticks, mode: 'write' }, 'duration')}
           >
             <DurationIcon ticks={ticks} />
             <small>{key}</small>
@@ -87,6 +89,26 @@ export function NotationToolbar({
         ))}
       </div>
       <div className="tool-group">
+        <button
+          aria-label="Dotted duration"
+          title="Toggle dotted duration (.)"
+          disabled={disabled}
+          aria-pressed={!!settings.dotted}
+          onClick={() => onChange({ ...settings, dotted: !settings.dotted }, 'dotted')}
+        >
+          ·
+        </button>
+        {!compact && (
+          <button
+            aria-label="Chord entry"
+            title="Keep the beat to add chord tones (H)"
+            disabled={disabled}
+            aria-pressed={!!settings.chord}
+            onClick={() => onChange({ ...settings, chord: !settings.chord, rest: false })}
+          >
+            Chord
+          </button>
+        )}
         <button
           aria-label="Rest entry"
           title="Toggle rests (R); insert rest (0)"
@@ -96,15 +118,15 @@ export function NotationToolbar({
         >
           Rest
         </button>
-        {(['', '#', 'b'] as const).map((accidental) => (
+        {(['', '#', 'b', 'n'] as const).map((accidental) => (
           <button
             key={accidental}
             disabled={disabled}
-            aria-label={`${accidental === '#' ? 'Sharp' : accidental === 'b' ? 'Flat' : 'Natural'} accidental`}
+            aria-label={`${accidental === '#' ? 'Sharp' : accidental === 'b' ? 'Flat' : accidental === 'n' ? 'Natural' : 'Key signature'} accidental`}
             aria-pressed={settings.accidental === accidental}
-            onClick={() => onChange({ ...settings, accidental })}
+            onClick={() => onChange({ ...settings, accidental }, 'accidental')}
           >
-            {accidental === '#' ? '♯' : accidental === 'b' ? '♭' : '♮'}
+            {accidental === '#' ? '♯' : accidental === 'b' ? '♭' : accidental === 'n' ? '♮' : 'Key'}
           </button>
         ))}
       </div>

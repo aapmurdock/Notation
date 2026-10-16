@@ -1,21 +1,47 @@
 import { useEffect, useRef, useState } from 'react'
 import {
+  baseDuration,
+  isDotted,
   createComposition,
   createExample,
   createTrack,
-  deleteEvent,
+  deleteEvents,
   getStaff,
   insertEvent,
   nextFreeTick,
   parseComposition,
+  pitchToMidi,
   removeLastEvent,
-  ticksPerMeasure,
   type Composition,
   type Step,
+  type Pitch,
+  type DurationTicks,
 } from '../shared/composition'
 import { ScoreView, type ScoreCursor } from './score/ScoreView'
 import { durationChoices, NotationToolbar, type EntrySettings } from './NotationToolbar'
 import { transposeStep } from './score/geometry'
+import { PianoAudition } from './audio/PianoAudition'
+import { SignatureEditor } from './SignatureEditor'
+import {
+  changeDuration,
+  changePitch,
+  changeSignature,
+  updateEvents,
+  toggleTies,
+  history,
+  recordEdit,
+  undo,
+  redo,
+} from '../shared/editing'
+import {
+  measureAtTick,
+  measureStart,
+  measureTicks,
+  scoreEnd,
+  resolvedPitch,
+  type KeySignature,
+  type TimeSignature,
+} from '../shared/signatures'
 
 function initialCursor(score: Composition): ScoreCursor {
   const track = score.tracks[0]!
@@ -41,7 +67,9 @@ const instruments = [
 ] as const
 
 export function App() {
-  const [score, setScore] = useState<Composition>(createExample)
+  const [score, setScore] = useState<Composition>(() => parseComposition(createExample()))
+  const editHistory = useRef(history(score))
+  const savedDocument = useRef(JSON.stringify(score))
   const [cursor, setCursor] = useState<ScoreCursor>(() => initialCursor(score))
   const [settings, setSettings] = useState<EntrySettings>({
     duration: 480,
@@ -50,10 +78,7 @@ export function App() {
     mode: 'write',
   })
   const selectedTrackId = cursor.trackId
-  const selectedMeasure = Math.min(
-    score.measureCount - 1,
-    Math.floor(cursor.tick / ticksPerMeasure(score)),
-  )
+  const selectedMeasure = Math.min(score.measureCount - 1, measureAtTick(score, cursor.tick))
   const [dirty, setDirty] = useState(false)
   const [fileName, setFileName] = useState<string | null>(null)
   const [message, setMessage] = useState('Select a measure to start composing.')
@@ -61,10 +86,71 @@ export function App() {
   const [busy, setBusy] = useState(false)
   const [instrument, setInstrument] = useState(0)
   const editor = useRef<HTMLDivElement>(null)
+  const audition = useRef<PianoAudition | null>(null)
+  const [audioUnavailable, setAudioUnavailable] = useState(false)
+  const [auditionEnabled, setAuditionEnabled] = useState(true)
+  useEffect(() => {
+    const piano = new PianoAudition(undefined, () => setAudioUnavailable(true))
+    audition.current = piano
+    return () => {
+      piano.dispose()
+      audition.current = null
+    }
+  }, [])
+  function previewPitch(staffId: string, tick: number, pitch: Pitch, eventId?: string): void {
+    const staff = score.tracks
+      .flatMap((track) => track.staves)
+      .find((staff) => staff.id === staffId)
+    if (auditionEnabled && staff)
+      audition.current?.play(pitchToMidi(resolvedPitch(score, staff, tick, pitch, eventId)))
+  }
+  const selection = cursor.selectedIds ?? (cursor.eventId ? [cursor.eventId] : [])
+  const entryDuration = (
+    settings.dotted ? settings.duration * 1.5 : settings.duration
+  ) as DurationTicks
+  function applyHistory(direction: 'undo' | 'redo'): void {
+    if (busy) return
+    const next = direction === 'undo' ? undo(editHistory.current) : redo(editHistory.current)
+    if (next === editHistory.current) return
+    editHistory.current = next
+    setScore(next.present)
+    setCursor((previous) =>
+      next.present.tracks.some(
+        (track) =>
+          track.id === previous.trackId &&
+          track.staves.some((staff) => staff.id === previous.staffId),
+      )
+        ? {
+            ...previous,
+            tick: Math.min(previous.tick, scoreEnd(next.present)),
+            eventId: undefined,
+            selectedIds: undefined,
+          }
+        : initialCursor(next.present),
+    )
+    setDirty(JSON.stringify(next.present) !== savedDocument.current)
+    setError('')
+    setMessage(direction === 'undo' ? 'Edit undone.' : 'Edit redone.')
+    audition.current?.stop()
+  }
+  function handleHistoryKey(event: React.KeyboardEvent): void {
+    if (
+      event.defaultPrevented ||
+      !(event.ctrlKey || event.metaKey) ||
+      event.altKey ||
+      (event.target as HTMLElement).closest('input, select, textarea, [contenteditable="true"]')
+    )
+      return
+    const key = event.key.toLowerCase()
+    if (key === 'z' || key === 'y') {
+      event.preventDefault()
+      applyHistory(key === 'y' || event.shiftKey ? 'redo' : 'undo')
+    }
+  }
   const selectedTrack = score.tracks.find((track) => track.id === selectedTrackId)!
   const selectedStaff = getStaff(score, cursor.trackId, cursor.staffId)
   const selectedEvents = selectedStaff.events.filter(
-    (event) => Math.floor(event.startTick / ticksPerMeasure(score)) === selectedMeasure,
+    (event) => measureAtTick(score, event.startTick) === selectedMeasure,
   )
   const notes = score.tracks
     .flatMap((track) => track.staves.flatMap((staff) => staff.events))
@@ -83,21 +169,52 @@ export function App() {
     return () => window.removeEventListener('beforeunload', guard)
   }, [dirty])
 
-  function change(next: Composition): void {
+  function change(next: Composition): boolean {
     try {
-      setScore(parseComposition(next))
-      setDirty(true)
+      const validated = parseComposition(next)
+      editHistory.current = recordEdit(editHistory.current, validated)
+      setScore(validated)
+      setDirty(JSON.stringify(validated) !== savedDocument.current)
       setError('')
       setMessage('Composition updated.')
+      return true
     } catch (cause) {
       showError(cause)
+      return false
     }
+  }
+  function applySignature(
+    measure: number,
+    next: { keySignature?: KeySignature; timeSignature?: TimeSignature },
+  ): void {
+    if (busy) return
+    const edited = changeSignature(score, measure, next)
+    if (change(edited))
+      setCursor((previous) => ({
+        ...previous,
+        eventId: undefined,
+        selectedIds: undefined,
+        tick: measureStart(edited, measure),
+      }))
   }
   function showError(cause: unknown): void {
     setError(cause instanceof Error ? cause.message : 'Something went wrong.')
   }
   function replace(next: Composition, name: string | null = null): void {
+    next = parseComposition(next)
+    const first = next.tracks[0]!.staves[0]!.events[0]
+    setSettings({
+      duration: first ? (baseDuration(first.durationTicks) as DurationTicks) : 480,
+      dotted: first ? isDotted(first.durationTicks) : false,
+      accidental: first?.kind === 'note' ? first.pitch.accidental : '',
+      chord: false,
+      rest: false,
+      mode: 'write',
+    })
+    editHistory.current = history(next)
+    savedDocument.current = JSON.stringify(next)
     setScore(next)
+    audition.current?.stop()
     setCursor(initialCursor(next))
     setDirty(false)
     setFileName(name)
@@ -129,6 +246,7 @@ export function App() {
     try {
       const result = await window.notation.saveScore(score)
       if (result.status === 'ok') {
+        savedDocument.current = JSON.stringify(score)
         setDirty(false)
         setFileName(result.value.fileName)
         setMessage(`Saved ${result.value.fileName}.`)
@@ -141,8 +259,11 @@ export function App() {
   }
   function selectStaff(trackId: string, staffId: string): void {
     const staff = getStaff(score, trackId, staffId)
-    const start = selectedMeasure * ticksPerMeasure(score)
-    const tick = Math.min(nextFreeTick(staff, start), start + ticksPerMeasure(score) - 120)
+    const start = measureStart(score, selectedMeasure)
+    const tick = Math.min(
+      nextFreeTick(staff, start),
+      start + measureTicks(score, selectedMeasure) - 60,
+    )
     setCursor({
       trackId,
       staffId,
@@ -159,35 +280,84 @@ export function App() {
     try {
       const pitch = { ...at.pitch, accidental: settings.accidental }
       const input = rest
-        ? { kind: 'rest' as const, durationTicks: settings.duration }
-        : { kind: 'note' as const, durationTicks: settings.duration, pitch }
-      const next = insertEvent(score, at.trackId, at.staffId, at.tick, input)
+        ? { kind: 'rest' as const, durationTicks: entryDuration }
+        : { kind: 'note' as const, durationTicks: entryDuration, pitch }
+      const next = insertEvent(score, at.trackId, at.staffId, at.tick, input, !!settings.chord)
       change(next)
+      if (!rest) previewPitch(at.staffId, at.tick, pitch)
       setCursor({
         ...at,
         pitch,
         eventId: undefined,
-        tick: nextFreeTick(getStaff(next, at.trackId, at.staffId), at.tick + settings.duration),
+        selectedIds: undefined,
+        tick:
+          settings.chord && !rest
+            ? at.tick
+            : nextFreeTick(getStaff(next, at.trackId, at.staffId), at.tick + entryDuration),
       })
       setMessage(
-        `Added ${rest ? 'rest' : pitch.step + pitch.accidental + pitch.octave}. Insertion position advanced.`,
+        `Added ${rest ? 'rest' : pitch.step + pitch.accidental + pitch.octave}. ${settings.chord && !rest ? 'Add another chord tone or move to the next beat.' : 'Insertion position advanced.'}`,
       )
     } catch (cause) {
       showError(cause)
     }
   }
   function removeSelected(): void {
-    if (!cursor.eventId || busy) return
-    change(deleteEvent(score, cursor.staffId, cursor.eventId))
-    setCursor({ ...cursor, eventId: undefined })
+    if (!selection.length || busy) return
+    change(deleteEvents(score, selection))
+    setCursor({ ...cursor, eventId: undefined, selectedIds: undefined })
     setMessage('Entry deleted. Other music stays at its original time.')
   }
-  function entrySettings(next: EntrySettings): void {
-    setSettings(next)
-    setCursor((previous) => ({
-      ...previous,
-      pitch: { ...previous.pitch, accidental: next.accidental },
-    }))
+  function entrySettings(next: EntrySettings, field?: keyof EntrySettings): void {
+    if (busy) return
+    try {
+      let edited = score
+      if (selection.length) {
+        if (
+          field === 'duration' ||
+          field === 'dotted' ||
+          next.duration !== settings.duration ||
+          !!next.dotted !== !!settings.dotted
+        )
+          edited = changeDuration(
+            edited,
+            selection,
+            (next.dotted ? next.duration * 1.5 : next.duration) as DurationTicks,
+          )
+        if (field === 'accidental' || next.accidental !== settings.accidental)
+          edited = updateEvents(edited, selection, (event) =>
+            event.kind === 'note'
+              ? { ...event, pitch: { ...event.pitch, accidental: next.accidental } }
+              : event,
+          )
+        if (edited !== score && !change(edited)) return
+      }
+      setSettings(next)
+      if (!selection.length)
+        setCursor((previous) => ({
+          ...previous,
+          pitch: { ...previous.pitch, accidental: next.accidental },
+        }))
+      else if (edited !== score && next.accidental !== settings.accidental) {
+        const note = edited.tracks
+          .flatMap((track) => track.staves)
+          .flatMap((staff) => staff.events)
+          .find((event) => selection.includes(event.id))
+        if (note?.kind === 'note') {
+          setCursor((previous) => ({ ...previous, pitch: note.pitch }))
+          previewPitch(cursor.staffId, note.startTick, note.pitch, note.id)
+        }
+      }
+    } catch (cause) {
+      showError(cause)
+    }
+  }
+  function tieSelected(): void {
+    try {
+      change(toggleTies(score, selection))
+    } catch (cause) {
+      showError(cause)
+    }
   }
   function handleScoreKey(event: React.KeyboardEvent): void {
     const target = event.target as HTMLElement
@@ -197,12 +367,26 @@ export function App() {
     const choice = durationChoices.find((choice) => choice.key === key)
     if (choice) {
       event.preventDefault()
-      entrySettings({ ...settings, duration: choice.ticks, mode: 'write' })
+      entrySettings({ ...settings, duration: choice.ticks, mode: 'write' }, 'duration')
       return
     }
     if (key === 'delete' || key === 'backspace') {
       event.preventDefault()
       removeSelected()
+      return
+    }
+    if (key === '.' || key === 'h') {
+      event.preventDefault()
+      entrySettings(
+        key === '.'
+          ? { ...settings, dotted: !settings.dotted }
+          : { ...settings, chord: !settings.chord, rest: false },
+      )
+      return
+    }
+    if (key === 't') {
+      event.preventDefault()
+      tieSelected()
       return
     }
     if (key === 'r') {
@@ -212,22 +396,37 @@ export function App() {
     }
     if (key === '+' || key === '-' || key === '=') {
       event.preventDefault()
-      entrySettings({ ...settings, accidental: key === '+' ? '#' : key === '-' ? 'b' : '' })
+      entrySettings({ ...settings, accidental: key === '+' ? '#' : key === '-' ? 'b' : 'n' })
       return
     }
     if (key === 'n' || key === 'escape') {
       event.preventDefault()
       entrySettings({ ...settings, mode: key === 'n' ? 'write' : 'select' })
-      if (key === 'escape') setCursor({ ...cursor, eventId: undefined })
+      setCursor({
+        ...cursor,
+        eventId: undefined,
+        selectedIds: undefined,
+        tick: key === 'n' ? nextFreeTick(selectedStaff, cursor.tick) : cursor.tick,
+      })
       return
     }
     if (key === 'arrowup' || key === 'arrowdown') {
       event.preventDefault()
-      setCursor({
-        ...cursor,
-        eventId: undefined,
-        pitch: transposeStep(cursor.pitch, key === 'arrowup' ? 1 : -1),
-      })
+      const pitch = transposeStep(cursor.pitch, key === 'arrowup' ? 1 : -1)
+      if (
+        cursor.eventId &&
+        selectedStaff.events.find((item) => item.id === cursor.eventId)?.kind === 'note' &&
+        selection.length === 1
+      ) {
+        try {
+          if (change(changePitch(score, cursor.eventId, pitch))) {
+            setCursor({ ...cursor, pitch })
+            previewPitch(cursor.staffId, cursor.tick, pitch, cursor.eventId)
+          }
+        } catch (cause) {
+          showError(cause)
+        }
+      } else setCursor({ ...cursor, eventId: undefined, selectedIds: undefined, pitch })
       return
     }
     if (key === 'arrowleft' || key === 'arrowright') {
@@ -235,12 +434,10 @@ export function App() {
       setCursor({
         ...cursor,
         eventId: undefined,
+        selectedIds: undefined,
         tick: Math.max(
           0,
-          Math.min(
-            score.measureCount * ticksPerMeasure(score),
-            cursor.tick + (key === 'arrowleft' ? -120 : 120),
-          ),
+          Math.min(scoreEnd(score), cursor.tick + (key === 'arrowleft' ? -120 : 120)),
         ),
       })
       return
@@ -263,7 +460,7 @@ export function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" onKeyDown={handleHistoryKey}>
       <header className="app-header">
         <div className="brand">
           <span className="brand-mark" aria-hidden="true">
@@ -274,7 +471,7 @@ export function App() {
           </div>
         </div>
         <span className="milestone">
-          Milestone 2A <span>Write directly on the score</span>
+          Milestone 2B <span>Write directly on the score</span>
         </span>
         <nav aria-label="File actions">
           <button
@@ -307,7 +504,7 @@ export function App() {
             <label htmlFor="title">Title</label>
             <input
               id="title"
-              key={score.id}
+              key={`${score.id}-${score.title}`}
               defaultValue={score.title}
               maxLength={120}
               disabled={busy}
@@ -347,13 +544,13 @@ export function App() {
                   }}
                 />
               </label>
-              <div className="signature">
-                <span>Time / Key</span>
-                <strong>
-                  {score.timeSignature.numerator}/4 <small>C major</small>
-                </strong>
-              </div>
             </div>
+            <SignatureEditor
+              disabled={busy}
+              score={score}
+              measure={selectedMeasure}
+              onChange={applySignature}
+            />
           </section>
           <section className="tool-section">
             <div className="section-heading">
@@ -438,8 +635,9 @@ export function App() {
               ))}
             </div>
             <p className="help">
-              Click a staff to write at the previewed pitch and beat. Click an existing note to
-              select it.
+              Click to write and hear a pitch. Drag a note vertically to repitch; Escape cancels.
+              Shift-click adds to the selection. Duration and accidental buttons edit selected
+              entries.
             </p>
             <dl className="keyboard-guide">
               <dt>1–5</dt>
@@ -459,8 +657,8 @@ export function App() {
           <div className="sidebar-note">
             <strong>A continuous musical workspace.</strong>
             <p>
-              Use the measure header or right-click a staff for entry options. MIDI, playback, and
-              the remaining Milestone 2 features are still future work.
+              Click signatures on the staff to edit them. Use Chord to keep the beat while adding
+              tones. MIDI recording and complete playback begin in later milestones.
             </p>
           </div>
         </aside>
@@ -491,7 +689,7 @@ export function App() {
                   change({ ...score, measureCount: score.measureCount + 1 })
                   setCursor({
                     ...cursor,
-                    tick: score.measureCount * ticksPerMeasure(score),
+                    tick: scoreEnd(score),
                     eventId: undefined,
                   })
                 }}
@@ -513,10 +711,37 @@ export function App() {
           <div className="entry-bar">
             <NotationToolbar settings={settings} disabled={busy} onChange={entrySettings} />
             <div className="entry-commands">
+              <button
+                aria-pressed={auditionEnabled}
+                onClick={() => {
+                  setAuditionEnabled(!auditionEnabled)
+                  audition.current?.stop()
+                }}
+              >
+                Audition {auditionEnabled ? 'on' : 'off'}
+              </button>
+              {audioUnavailable && (
+                <span aria-live="polite">Audio unavailable. Check the output device.</span>
+              )}
+              <button
+                disabled={busy || !editHistory.current.past.length}
+                onClick={() => applyHistory('undo')}
+              >
+                Undo
+              </button>
+              <button
+                disabled={busy || !editHistory.current.future.length}
+                onClick={() => applyHistory('redo')}
+              >
+                Redo
+              </button>
+              <button disabled={busy || !selection.length} onClick={tieSelected}>
+                Toggle tie
+              </button>
               <button disabled={busy} onClick={() => enter()}>
                 {settings.rest ? 'Insert rest' : 'Enter note'}
               </button>
-              <button disabled={busy || !cursor.eventId} onClick={removeSelected}>
+              <button disabled={busy || !selection.length} onClick={removeSelected}>
                 Delete selected
               </button>
               <button
@@ -524,7 +749,12 @@ export function App() {
                 onClick={() => {
                   const last = selectedEvents.at(-1)!
                   change(removeLastEvent(score, cursor.trackId, selectedMeasure, cursor.staffId))
-                  setCursor({ ...cursor, tick: last.startTick, eventId: undefined })
+                  setCursor({
+                    ...cursor,
+                    tick: last.startTick,
+                    eventId: undefined,
+                    selectedIds: undefined,
+                  })
                 }}
               >
                 Remove last entry
@@ -532,10 +762,10 @@ export function App() {
             </div>
             <p className="cursor-status" aria-live="polite">
               {selectedTrack.name} · {selectedStaff.clef} · Measure {selectedMeasure + 1}, beat{' '}
-              {(cursor.tick % ticksPerMeasure(score)) / 480 + 1}
-              {cursor.tick === score.measureCount * ticksPerMeasure(score) ? ' · End of score' : ''}
+              {(cursor.tick - measureStart(score, selectedMeasure)) / 480 + 1}
+              {cursor.tick === scoreEnd(score) ? ' · End of score' : ''}
               {cursor.eventId
-                ? ' · Entry selected'
+                ? ` · ${selection.length} selected`
                 : ` · ${cursor.pitch.step}${cursor.pitch.accidental}${cursor.pitch.octave}`}
             </p>
           </div>
@@ -547,9 +777,32 @@ export function App() {
             onSelect={(next) => {
               if (!busy) {
                 setCursor(next)
+                const selected = getStaff(score, next.trackId, next.staffId).events.find(
+                  (event) => event.id === next.eventId,
+                )
+                if (selected)
+                  setSettings((previous) => ({
+                    ...previous,
+                    duration: baseDuration(selected.durationTicks) as DurationTicks,
+                    dotted: isDotted(selected.durationTicks),
+                    accidental:
+                      selected.kind === 'note' ? selected.pitch.accidental : previous.accidental,
+                  }))
                 setError('')
               }
             }}
+            onSignatureChange={applySignature}
+            onPitchChange={(eventId, staffId, pitch) => {
+              if (busy) return
+              try {
+                if (change(changePitch(score, eventId, pitch)))
+                  setCursor((previous) => ({ ...previous, staffId, pitch }))
+              } catch (cause) {
+                showError(cause)
+              }
+            }}
+            onAudition={previewPitch}
+            onStopAudition={() => audition.current?.stop()}
             onInsert={enter}
             onSettings={entrySettings}
           />
