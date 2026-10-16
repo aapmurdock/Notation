@@ -81,14 +81,14 @@ export function ScoreView({
   }, [score, width])
   useEffect(() => {
     if (!popover) return
-    popoverRef.current?.querySelector<HTMLButtonElement>('button')?.focus()
+    popoverRef.current?.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true })
     const dismiss = (event: globalThis.PointerEvent): void => {
       if (!popoverRef.current?.contains(event.target as Node)) setPopover(null)
     }
     const escape = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
         setPopover(null)
-        interaction.current?.focus()
+        interaction.current?.focus({ preventScroll: true })
       }
     }
     document.addEventListener('pointerdown', dismiss)
@@ -147,7 +147,7 @@ export function ScoreView({
   }
   function selectEvent(measure: StaffMeasure, item: StaffMeasure['events'][number]): void {
     if (disabled) return
-    interaction.current?.focus()
+    interaction.current?.focus({ preventScroll: true })
     setPopover(null)
     setPreview(null)
     onSelect({
@@ -244,9 +244,10 @@ export function ScoreView({
                       onPointerDown={(event) => {
                         if (disabled || drawing || event.button !== 0) return
                         event.preventDefault()
-                        interaction.current?.focus()
-                        setPopover(null)
+                        // Capture the event's position before focus can change the viewport transform.
                         const hit = target(event, measure)
+                        interaction.current?.focus({ preventScroll: true })
+                        setPopover(null)
                         const next = {
                           trackId: measure.trackId,
                           staffId: measure.staffId,
@@ -420,7 +421,7 @@ export function ScoreView({
                   aria-label="Close entry options"
                   onClick={() => {
                     setPopover(null)
-                    interaction.current?.focus()
+                    interaction.current?.focus({ preventScroll: true })
                   }}
                 >
                   ×
@@ -433,7 +434,7 @@ export function ScoreView({
                 onChange={(next) => {
                   onSettings(next)
                   setPopover(null)
-                  interaction.current?.focus()
+                  interaction.current?.focus({ preventScroll: true })
                 }}
               />
             </div>

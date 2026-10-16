@@ -35,7 +35,7 @@ Electron main                       Sandboxed React renderer
 
 ## Interaction and musical time
 
-`geometry.ts` is the pure adapter between staff coordinates and musical positions. The bottom treble line is E4; the bottom bass line is G2. Each half staff space maps to one diatonic pitch. Screen coordinates are transformed through the SVG's actual matrix, so scrolling, resizing, and display scaling use the same coordinate system as engraving.
+`geometry.ts` is the pure adapter between staff coordinates and musical positions. The bottom treble line is E4; the bottom bass line is G2. Each half staff space maps to one diatonic pitch. Screen coordinates are transformed through the SVG's actual matrix, so scrolling, resizing, and display scaling use the same coordinate system as engraving. Pointer coordinates are resolved before moving focus, and programmatic focus uses `preventScroll`: otherwise focusing a large SVG can scroll the viewport during pointerdown and invalidate the event's original client coordinates.
 
 Mouse x positions snap to a duration-based grid using actual formatter tick anchors. Unwritten positions interpolate between neighboring anchors. Hover displays a pending note/rest and its pitch/beat. Clicking writes into the target staff; clicking an existing notehead/rest selects it. The caret advances by duration and skips occupied time, continuing into the next measure. Each operation specifies part ID, staff ID, and absolute tick position. Entries cannot overlap another event in the same staff or cross a barline; simultaneous events in different staves are valid.
 

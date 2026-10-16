@@ -150,7 +150,9 @@ export function App() {
       pitch: { step: 'C', octave: staff.clef === 'bass' ? 3 : 4, accidental: settings.accidental },
     })
     setError('')
-    editor.current?.querySelector<SVGSVGElement>('.score-interaction')?.focus()
+    editor.current
+      ?.querySelector<SVGSVGElement>('.score-interaction')
+      ?.focus({ preventScroll: true })
   }
   function enter(at = cursor, rest = settings.rest): void {
     if (busy) return

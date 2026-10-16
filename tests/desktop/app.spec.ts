@@ -40,9 +40,16 @@ test('desktop saves and reopens independently entered grand staff music and migr
     await page.getByLabel('Title').press('Enter')
     await ready(page)
     const treble = await staffPoint(page, 'treble', 1, 0)
+    await page.mouse.move(treble.x, treble.y)
+    await expect(page.locator('.note-preview')).toHaveAttribute('data-preview-pitch', 'E4')
     await page.mouse.click(treble.x, treble.y)
     await ready(page)
+    await expect(
+      page.getByRole('button', { name: 'E4 note, Piano treble, measure 1, beat 1', exact: true }),
+    ).toBeVisible()
     const bass = await staffPoint(page, 'bass', 1, 3)
+    await page.mouse.move(bass.x, bass.y)
+    await expect(page.locator('.note-preview')).toHaveAttribute('data-preview-pitch', 'C3')
     await page.mouse.click(bass.x, bass.y)
     await ready(page)
     await page.keyboard.press('e')
@@ -109,3 +116,67 @@ test('desktop saves and reopens independently entered grand staff music and migr
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+for (const zoomFactor of [1, 1.25]) {
+  test(`desktop pitches match painted staff positions while scrolled at ${zoomFactor}x zoom`, async ({}, testInfo) => {
+    const app = await electron.launch({
+      args: [...(process.env.TEST_ELECTRON_NO_SANDBOX === '1' ? ['--no-sandbox'] : []), '.'],
+    })
+    try {
+      await app.context().tracing.start({ screenshots: true, snapshots: true, sources: true })
+      const page = await app.firstWindow()
+      await ready(page)
+      await app.evaluate(({ BrowserWindow }, zoom) => {
+        const window = BrowserWindow.getAllWindows()[0]!
+        window.setContentSize(1000, 750)
+        window.webContents.setZoomFactor(zoom)
+      }, zoomFactor)
+      await ready(page)
+      await page.getByRole('button', { name: 'New score', exact: true }).click()
+      await ready(page)
+      await testInfo.attach('viewport', {
+        body: JSON.stringify(
+          await page.evaluate(() => ({
+            width: innerWidth,
+            height: innerHeight,
+            dpr: devicePixelRatio,
+          })),
+        ),
+        contentType: 'application/json',
+      })
+      for (const { clef, measure, steps, pitch } of [
+        { clef: 'treble', measure: 1, steps: 0, pitch: 'E4' },
+        { clef: 'treble', measure: 2, steps: 1, pitch: 'F4' },
+        { clef: 'treble', measure: 3, steps: -2, pitch: 'C4' },
+        { clef: 'bass', measure: 1, steps: 3, pitch: 'C3' },
+        { clef: 'bass', measure: 2, steps: 0, pitch: 'G2' },
+        { clef: 'bass', measure: 3, steps: 8, pitch: 'A3' },
+      ] as const) {
+        await page.getByLabel('Title').focus()
+        const point = await staffPoint(page, clef, measure, steps)
+        await page.mouse.move(point.x, point.y)
+        await expect(page.locator('.note-preview')).toHaveAttribute('data-preview-pitch', pitch)
+        const scroll = await page.evaluate(() => ({ x: scrollX, y: scrollY }))
+        await page.mouse.click(point.x, point.y)
+        await ready(page)
+        await expect(
+          page.getByRole('button', {
+            name: `${pitch} note, Piano ${clef}, measure ${measure}, beat 1`,
+            exact: true,
+          }),
+        ).toBeVisible()
+        expect(await page.evaluate(() => ({ x: scrollX, y: scrollY }))).toEqual(scroll)
+      }
+      await expect(page.locator('.vf-piano-brace')).toHaveCount(
+        await page.locator('.vf-score-system').count(),
+      )
+      await expect(page.locator('.event-hit')).toHaveCount(6)
+    } finally {
+      await app.context().tracing.stop({ path: testInfo.outputPath('trace.zip') })
+      await app.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows().forEach((window) => window.destroy()),
+      )
+      await app.close()
+    }
+  })
+}

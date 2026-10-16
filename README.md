@@ -69,6 +69,8 @@ npm run dev
 13. **Check old files.** Open a copy of a Milestone 1 `.notation` file. Its music should remain on the original clef; piano receives the other empty staff. Save to a **new filename** during evaluation: new saves use version 2 and cannot be opened by Milestone 1.
 14. **Check protection against losing work.** Make an edit, then choose New/Open/Load example or close the window. Cancel the confirmation and verify the composition remains. Open an invalid file and verify it reports an error without replacing your score.
 
+For the Windows pitch regression, repeat the mouse-entry checks in a short window that requires scrolling, at both 100% and 125% display scaling. Focus the Title field first, then hover and click the engraved treble bottom line (E4) or bass C3 position. The preview and inserted pitch must agree, and returning focus to the score must not jump the viewport. The desktop suite also checks scrolled entry at 100% and 125% application zoom and saves traces for diagnosis.
+
 Horizontal clicks snap to a grid based on the selected duration. The preview identifies the exact insertion pitch and beat before the click. Existing notes/rests are selected rather than overwritten; occupied time and barline overruns are rejected. Changing duration affects new entries, not the duration of a selected note. Deleted entries leave a gap rather than shifting later music.
 
 ### Keyboard reference (with score or toolbar focus)

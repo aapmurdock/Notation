@@ -5,7 +5,7 @@ export async function ready(page: Page): Promise<void> {
   await expect(page.getByRole('alert')).toHaveCount(0)
 }
 
-/** Point into an initially empty bar using its actual SVG coordinate transform. */
+/** Target the lines VexFlow actually painted, independently of the app's pitch mapping. */
 export async function staffPoint(
   page: Page,
   clef: 'treble' | 'bass',
@@ -24,11 +24,19 @@ export async function staffPoint(
     (element, { stepsAboveBottom, fraction }) => {
       const start = Number(element.getAttribute('data-note-start'))
       const end = Number(element.getAttribute('data-note-end'))
-      const bottom = Number(element.getAttribute('data-bottom'))
+      const staff = Array.from(document.querySelectorAll('.engraving .vf-stave')).find(
+        (staff) =>
+          staff.getAttribute('data-staff-id') === element.getAttribute('data-staff-id') &&
+          staff.getAttribute('data-measure') === element.getAttribute('data-measure'),
+      )!
+      const lines = staff.querySelectorAll<SVGPathElement>('path')
+      if (lines.length !== 5) throw new Error('Expected five engraved staff lines.')
+      const bottom = lines[4]!.getPointAtLength(0).y
+      const spacing = bottom - lines[3]!.getPointAtLength(0).y
       const point = new DOMPoint(
         start + (end - start) * fraction,
-        bottom - stepsAboveBottom * 5,
-      ).matrixTransform(element.closest('svg')!.getScreenCTM()!)
+        bottom - (stepsAboveBottom * spacing) / 2,
+      ).matrixTransform(lines[4]!.getScreenCTM()!)
       return { x: point.x, y: point.y }
     },
     { stepsAboveBottom, fraction },
