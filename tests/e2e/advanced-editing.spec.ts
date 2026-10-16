@@ -388,3 +388,37 @@ test('rest insertion and keyboard pitch movement stay silent', async ({ page }) 
     page.getByRole('button', { name: 'Rest, Piano treble, measure 1, beat 1', exact: true }),
   ).toHaveAttribute('data-duration', '480')
 })
+
+test('empty signature targets remain distinct at wrapped system starts', async ({ page }) => {
+  await page.goto('/')
+  await ready(page)
+  await page.getByRole('button', { name: 'New score', exact: true }).click()
+  await ready(page)
+  await page.locator('.score-viewport').evaluate((viewport) => {
+    viewport.style.width = '260px'
+  })
+  await expect(page.locator('.vf-score-system')).toHaveCount(4)
+  await ready(page)
+  for (const clef of ['treble', 'bass']) {
+    const key = page.getByRole('button', {
+      name: `Key signature, Piano ${clef}, measure 3: C major`,
+      exact: true,
+    })
+    const time = page.getByRole('button', {
+      name: `Time signature, Piano ${clef}, measure 3: 4/4`,
+      exact: true,
+    })
+    await key.click({ timeout: 3000 })
+    await expect(page.getByRole('dialog', { name: 'Key signature editor' })).toBeVisible()
+    await page.keyboard.press('Escape')
+    await time.click({ timeout: 3000 })
+    await expect(page.getByRole('dialog', { name: 'Time signature editor' })).toBeVisible()
+    await page.keyboard.press('Escape')
+    const boxes = await page
+      .locator(`.score-interaction g[data-clef="${clef}"][data-measure="2"] .signature-target`)
+      .evaluateAll((elements) =>
+        elements.map((element) => element.getBoundingClientRect().toJSON()),
+      )
+    expect(boxes[0]!.right).toBeLessThan(boxes[1]!.left)
+  }
+})

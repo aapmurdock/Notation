@@ -305,6 +305,9 @@ export function engrave(
             }
           }
         })
+        // An empty C signature still has an engine modifier after the clef. Allocate
+        // placeholder targets sequentially so an absent meter cannot cover that key target.
+        let signatureRight = column.x + 5
         measures.push({
           trackId: row.track.id,
           staffId: row.staff.id,
@@ -327,11 +330,16 @@ export function engrave(
                   item.getCategory() === (kind === 'key' ? 'KeySignature' : 'TimeSignature'),
               )
             const empty = !modifier || modifier.getWidth() === 0
+            const width = empty ? 20 : Math.max(16, modifier.getWidth())
+            const x = empty
+              ? Math.max(modifier?.getX() ?? signatureRight, signatureRight)
+              : modifier.getX()
+            signatureRight = Math.max(signatureRight, x + width + 4)
             return {
               kind,
-              x: modifier?.getX() ?? column.x + (kind === 'key' ? 5 : 27),
-              y: empty ? stave.getYForLine(0) - 17 : stave.getYForLine(0) - 4,
-              width: empty ? 20 : Math.max(16, modifier.getWidth()),
+              x,
+              y: empty ? stave.getYForLine(0) - 21 : stave.getYForLine(0) - 4,
+              width,
               height: empty ? 15 : 48,
               empty,
             }
