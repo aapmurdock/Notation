@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import {
-  appendEvent, createComposition, createExample, createTrack, parseComposition,
-  pitchToMidi, removeLastEvent, serializeComposition, ticksPerMeasure,
+  appendEvent,
+  createComposition,
+  createExample,
+  createTrack,
+  parseComposition,
+  pitchToMidi,
+  removeLastEvent,
+  serializeComposition,
+  ticksPerMeasure,
 } from './composition'
 
 describe('composition model', () => {
@@ -10,7 +17,7 @@ describe('composition model', () => {
     const b = createComposition()
     expect(a.id).not.toBe(b.id)
     expect(a.tracks[0]!.id).not.toBe(b.tracks[0]!.id)
-    expect(parseComposition(createExample()).tracks[0]!.events).toHaveLength(13)
+    expect(parseComposition(createExample()).tracks[0]!.staves[0]!.events).toHaveLength(13)
     expect(ticksPerMeasure(a)).toBe(1920)
   })
 
@@ -25,15 +32,21 @@ describe('composition model', () => {
     const cello = createTrack('Cello', 'bass', 42)
     const score = { ...original, tracks: [...original.tracks, cello] }
     const note = appendEvent(score, cello.id, 1, {
-      kind: 'note', durationTicks: 960, pitch: { step: 'C', octave: 3, accidental: '#' },
+      kind: 'note',
+      durationTicks: 960,
+      pitch: { step: 'C', octave: 3, accidental: '#' },
     })
     const rest = appendEvent(note, cello.id, 1, { kind: 'rest', durationTicks: 960 })
-    expect(rest.tracks[1]!.events.map((event) => event.startTick)).toEqual([1920, 2880])
-    expect(rest.tracks[1]!.events[1]!.kind).toBe('rest')
-    expect(original.tracks[0]!.events).toHaveLength(0)
-    expect(cello.events).toHaveLength(0)
-    expect(() => appendEvent(rest, cello.id, 1, { kind: 'rest', durationTicks: 120 })).toThrow(/full/)
-    expect(removeLastEvent(rest, cello.id, 1).tracks[1]!.events).toEqual(note.tracks[1]!.events)
+    expect(rest.tracks[1]!.staves[0]!.events.map((event) => event.startTick)).toEqual([1920, 2880])
+    expect(rest.tracks[1]!.staves[0]!.events[1]!.kind).toBe('rest')
+    expect(original.tracks[0]!.staves[0]!.events).toHaveLength(0)
+    expect(cello.staves[0]!.events).toHaveLength(0)
+    expect(() => appendEvent(rest, cello.id, 1, { kind: 'rest', durationTicks: 120 })).toThrow(
+      /full/,
+    )
+    expect(removeLastEvent(rest, cello.id, 1).tracks[1]!.staves[0]!.events).toEqual(
+      note.tracks[1]!.staves[0]!.events,
+    )
   })
 
   it('converts spelled pitches into MIDI note numbers', () => {
@@ -43,14 +56,54 @@ describe('composition model', () => {
   })
 
   it.each([
-    ['version', (score: Record<string, unknown>) => { score.schemaVersion = 2 }],
-    ['title', (score: Record<string, unknown>) => { score.title = '' }],
-    ['tempo', (score: Record<string, unknown>) => { score.tempoBpm = 0 }],
-    ['fractional tempo', (score: Record<string, unknown>) => { score.tempoBpm = 100.5 }],
-    ['missing part', (score: Record<string, unknown>) => { score.tracks = [] }],
-    ['too many bars', (score: Record<string, unknown>) => { score.measureCount = 65 }],
-    ['key', (score: Record<string, unknown>) => { score.keySignature = 'G' }],
-    ['time', (score: Record<string, unknown>) => { score.timeSignature = { numerator: 7, denominator: 8 } }],
+    [
+      'version',
+      (score: Record<string, unknown>) => {
+        score.schemaVersion = 999
+      },
+    ],
+    [
+      'title',
+      (score: Record<string, unknown>) => {
+        score.title = ''
+      },
+    ],
+    [
+      'tempo',
+      (score: Record<string, unknown>) => {
+        score.tempoBpm = 0
+      },
+    ],
+    [
+      'fractional tempo',
+      (score: Record<string, unknown>) => {
+        score.tempoBpm = 100.5
+      },
+    ],
+    [
+      'missing part',
+      (score: Record<string, unknown>) => {
+        score.tracks = []
+      },
+    ],
+    [
+      'too many bars',
+      (score: Record<string, unknown>) => {
+        score.measureCount = 65
+      },
+    ],
+    [
+      'key',
+      (score: Record<string, unknown>) => {
+        score.keySignature = 'G'
+      },
+    ],
+    [
+      'time',
+      (score: Record<string, unknown>) => {
+        score.timeSignature = { numerator: 7, denominator: 8 }
+      },
+    ],
   ])('rejects unsupported %s on import', (_name, mutate) => {
     const score = JSON.parse(serializeComposition(createExample())) as Record<string, unknown>
     mutate(score)
@@ -59,7 +112,7 @@ describe('composition model', () => {
 
   it('rejects overlapping, off-grid, out-of-range, and cross-bar events', () => {
     const score = createExample()
-    const event = score.tracks[0]!.events[1]!
+    const event = score.tracks[0]!.staves[0]!.events[1]!
     const invalidEvents = [
       { ...event, startTick: 0 },
       { ...event, startTick: 481 },
@@ -71,7 +124,7 @@ describe('composition model', () => {
     ]
     for (const invalid of invalidEvents) {
       const copy = structuredClone(score)
-      copy.tracks[0]!.events[1] = invalid as typeof event
+      copy.tracks[0]!.staves[0]!.events[1] = invalid as typeof event
       expect(() => parseComposition(copy)).toThrow()
     }
   })
@@ -80,6 +133,8 @@ describe('composition model', () => {
     const score = createComposition()
     score.timeSignature.numerator = 3
     expect(ticksPerMeasure(parseComposition(score))).toBe(1440)
-    expect(() => appendEvent(score, score.tracks[0]!.id, 0, { kind: 'rest', durationTicks: 1920 })).toThrow(/duration/)
+    expect(() =>
+      appendEvent(score, score.tracks[0]!.id, 0, { kind: 'rest', durationTicks: 1920 }),
+    ).toThrow(/duration/)
   })
 })

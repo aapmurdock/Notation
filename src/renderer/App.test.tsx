@@ -5,24 +5,25 @@ import { createComposition } from '../shared/composition'
 import { App } from './App'
 
 vi.mock('./score/ScoreView', () => ({ ScoreView: () => <div>Engraving surface</div> }))
-afterEach(() => { delete window.notation })
+afterEach(() => {
+  delete window.notation
+})
 
 describe('score workspace', () => {
-  it('creates a score, edits metadata, enters notes, and reports a full bar', async () => {
+  it('creates a score, edits metadata, and advances note entry across barlines', async () => {
     const user = userEvent.setup()
     render(<App />)
     await user.click(screen.getByRole('button', { name: 'New score' }))
     await user.clear(screen.getByLabelText('Title'))
     await user.type(screen.getByLabelText('Title'), 'First melody{Enter}')
     expect(document.title).toContain('First melody')
-    await user.selectOptions(screen.getByLabelText('Duration'), '1920')
-    await user.click(screen.getByRole('button', { name: '+ Add note' }))
+    await user.click(screen.getByRole('button', { name: 'Whole duration' }))
+    await user.click(screen.getByRole('button', { name: 'Enter note' }))
     expect(screen.getByText(/4 measures/)).toHaveTextContent('1 notes')
-    await user.click(screen.getByRole('button', { name: 'Add rest' }))
-    expect(screen.getByRole('alert')).toHaveTextContent('measure is full')
-    await user.click(screen.getByRole('button', { name: 'Remove last entry' }))
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
-    expect(screen.getByText(/4 measures/)).toHaveTextContent('0 notes')
+    await user.click(screen.getByRole('button', { name: 'Enter note' }))
+    expect(screen.getByText(/4 measures/)).toHaveTextContent('2 notes')
+    expect(screen.getByText(/Piano · treble · Measure 3/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Remove last entry' })).toBeDisabled()
   })
   it('keeps the last valid tempo and protects unsaved edits', async () => {
     const user = userEvent.setup()
@@ -39,12 +40,17 @@ describe('score workspace', () => {
   it('handles save cancellation, success, failure, and validated open results', async () => {
     const user = userEvent.setup()
     const loaded = { ...createComposition(), title: 'Reopened piece' }
-    const saveScore = vi.fn().mockResolvedValueOnce({ status: 'cancelled' })
+    const saveScore = vi
+      .fn()
+      .mockResolvedValueOnce({ status: 'cancelled' })
       .mockResolvedValueOnce({ status: 'error', message: 'Disk full' })
       .mockResolvedValueOnce({ status: 'ok', value: { fileName: 'piece.notation' } })
     window.notation = {
-      saveScore, setDocumentDirty: vi.fn(),
-      openScore: vi.fn().mockResolvedValue({ status: 'ok', value: { score: loaded, fileName: 'loaded.notation' } }),
+      saveScore,
+      setDocumentDirty: vi.fn(),
+      openScore: vi
+        .fn()
+        .mockResolvedValue({ status: 'ok', value: { score: loaded, fileName: 'loaded.notation' } }),
     }
     render(<App />)
     await user.click(screen.getByRole('button', { name: '+ Add measure' }))
