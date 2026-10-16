@@ -243,9 +243,20 @@ test('desktop restores edited chords, dotted rests, ties, and local signatures e
     for (let i = 0; i < 5; i++) await page.keyboard.press('ArrowRight')
     await page.keyboard.press('0')
     await ready(page)
-    await page
-      .getByRole('button', { name: 'Key signature, Piano treble, measure 3: C major', exact: true })
-      .click()
+    const keyTarget = page.getByRole('button', { name: 'Key signature, Piano treble, measure 3: C major', exact: true })
+    try {
+      await keyTarget.click({ timeout: 8000 })
+    } catch (cause) {
+      const position = await page.evaluate(() => {
+        const target = Array.from(document.querySelectorAll('.signature-target')).find(element => element.getAttribute('aria-label') === 'Key signature, Piano treble, measure 3: C major')
+        const box = target?.getBoundingClientRect()
+        return { width: innerWidth, height: innerHeight, scrollX, scrollY,
+          box: box?.toJSON(),
+          covering: box ? document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)?.outerHTML.slice(0, 500) : 'missing target',
+        }
+      })
+      throw new Error(`${cause instanceof Error ? cause.message : String(cause)}\nSignature hit diagnostics: ${JSON.stringify(position)}`)
+    }
     const keyEditor = page.getByRole('dialog', { name: 'Key signature editor' })
     await keyEditor.getByLabel('Key signature').selectOption('Dm')
     await keyEditor.getByRole('button', { name: 'Apply key signature', exact: true }).click()
