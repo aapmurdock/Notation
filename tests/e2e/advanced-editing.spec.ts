@@ -179,6 +179,7 @@ test('edits chord durations, dots, accidentals, selections, deletion, and undo/r
     exact: true,
   })
   await c.click()
+  await page.getByRole('button', { name: 'Select chord / ties', exact: true }).click()
   await page.getByRole('button', { name: 'Dotted duration', exact: true }).click()
   await ready(page)
   await expect(page.locator('.event-hit[data-duration="720"]')).toHaveCount(3)

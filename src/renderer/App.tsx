@@ -17,6 +17,16 @@ import {
   type Pitch,
   type DurationTicks,
 } from '../shared/composition'
+import { PianoRoll, type RollPreferences, type RollScroll } from './piano-roll/PianoRoll'
+import {
+  defaultStaff,
+  editPianoNotes,
+  insertPianoNote,
+  pianoNotes,
+  spellMidi,
+  linkedNotes,
+  type NoteUpdate,
+} from '../shared/piano-roll'
 import { ScoreView, type ScoreCursor } from './score/ScoreView'
 import { durationChoices, NotationToolbar, type EntrySettings } from './NotationToolbar'
 import { transposeStep } from './score/geometry'
@@ -38,6 +48,7 @@ import {
   measureStart,
   measureTicks,
   scoreEnd,
+  signatureAt,
   resolvedPitch,
   type KeySignature,
   type TimeSignature,
@@ -77,6 +88,28 @@ export function App() {
     accidental: '',
     mode: 'write',
   })
+  const [view, setView] = useState<'notation' | 'piano-roll'>('notation')
+  const [rollPreferences, setRollPreferences] = useState<RollPreferences>({
+    snap: 120,
+    quarterWidth: 96,
+    rowHeight: 18,
+    tool: 'draw',
+    newStaff: 'auto',
+  })
+  const rollScroll = useRef<Record<string, RollScroll>>({})
+  const viewScroll = useRef({ notation: 0, 'piano-roll': 0 })
+  function switchView(next: typeof view): void {
+    viewScroll.current[view] = window.scrollY
+    audition.current?.stop()
+    if (next === 'piano-roll') {
+      const notes = new Set(pianoNotes(score, cursor.trackId).map((note) => note.event.id))
+      const ids = selection.filter((id) => notes.has(id))
+      if (ids.length !== selection.length)
+        setCursor((previous) => ({ ...previous, eventId: ids[0], selectedIds: ids }))
+    }
+    setView(next)
+    requestAnimationFrame(() => window.scrollTo(0, viewScroll.current[next]))
+  }
   const selectedTrackId = cursor.trackId
   const selectedMeasure = Math.min(score.measureCount - 1, measureAtTick(score, cursor.tick))
   const [dirty, setDirty] = useState(false)
@@ -114,8 +147,26 @@ export function App() {
     if (next === editHistory.current) return
     editHistory.current = next
     setScore(next.present)
-    setCursor((previous) =>
-      next.present.tracks.some(
+    setCursor((previous) => {
+      const entries = next.present.tracks.flatMap((track) =>
+        track.staves.flatMap((staff) => staff.events.map((event) => ({ track, staff, event }))),
+      )
+      const ids = (previous.selectedIds ?? (previous.eventId ? [previous.eventId] : [])).filter(
+        (id) => entries.some((item) => item.event.id === id),
+      )
+      const active =
+        entries.find((item) => item.event.id === previous.eventId) ??
+        entries.find((item) => ids.includes(item.event.id))
+      if (active)
+        return {
+          trackId: active.track.id,
+          staffId: active.staff.id,
+          tick: active.event.startTick,
+          pitch: active.event.kind === 'note' ? active.event.pitch : previous.pitch,
+          eventId: active.event.id,
+          selectedIds: ids,
+        }
+      return next.present.tracks.some(
         (track) =>
           track.id === previous.trackId &&
           track.staves.some((staff) => staff.id === previous.staffId),
@@ -126,8 +177,8 @@ export function App() {
             eventId: undefined,
             selectedIds: undefined,
           }
-        : initialCursor(next.present),
-    )
+        : initialCursor(next.present)
+    })
     setDirty(JSON.stringify(next.present) !== savedDocument.current)
     setError('')
     setMessage(direction === 'undo' ? 'Edit undone.' : 'Edit redone.')
@@ -204,7 +255,11 @@ export function App() {
     next = parseComposition(next)
     const first = next.tracks[0]!.staves[0]!.events[0]
     setSettings({
-      duration: first ? (baseDuration(first.durationTicks) as DurationTicks) : 480,
+      duration:
+        first &&
+        durationChoices.some((choice) => choice.ticks === baseDuration(first.durationTicks))
+          ? baseDuration(first.durationTicks)
+          : 480,
       dotted: first ? isDotted(first.durationTicks) : false,
       accidental: first?.kind === 'note' ? first.pitch.accidental : '',
       chord: false,
@@ -214,6 +269,7 @@ export function App() {
     editHistory.current = history(next)
     savedDocument.current = JSON.stringify(next)
     setScore(next)
+    rollScroll.current = {}
     audition.current?.stop()
     setCursor(initialCursor(next))
     setDirty(false)
@@ -272,7 +328,7 @@ export function App() {
     })
     setError('')
     editor.current
-      ?.querySelector<SVGSVGElement>('.score-interaction')
+      ?.querySelector<SVGSVGElement>(view === 'notation' ? '.score-interaction' : '.roll-grid')
       ?.focus({ preventScroll: true })
   }
   function enter(at = cursor, rest = settings.rest): void {
@@ -319,11 +375,17 @@ export function App() {
           next.duration !== settings.duration ||
           !!next.dotted !== !!settings.dotted
         )
-          edited = changeDuration(
-            edited,
-            selection,
-            (next.dotted ? next.duration * 1.5 : next.duration) as DurationTicks,
-          )
+          edited =
+            view === 'piano-roll'
+              ? editPianoNotes(
+                  edited,
+                  selectedTrackId,
+                  selection.map((id) => ({
+                    id,
+                    durationTicks: next.duration * (next.dotted ? 1.5 : 1),
+                  })),
+                )
+              : changeDuration(edited, selection, next.duration * (next.dotted ? 1.5 : 1))
         if (field === 'accidental' || next.accidental !== settings.accidental)
           edited = updateEvents(edited, selection, (event) =>
             event.kind === 'note'
@@ -361,13 +423,26 @@ export function App() {
   }
   function handleScoreKey(event: React.KeyboardEvent): void {
     const target = event.target as HTMLElement
-    if (busy || target.closest('input, select, textarea, [contenteditable="true"]')) return
+    if (
+      view === 'piano-roll' ||
+      busy ||
+      target.closest('input, select, textarea, [contenteditable="true"]')
+    )
+      return
     if (event.ctrlKey || event.metaKey || event.altKey) return
     const key = event.key.toLowerCase()
     const choice = durationChoices.find((choice) => choice.key === key)
     if (choice) {
       event.preventDefault()
-      entrySettings({ ...settings, duration: choice.ticks, mode: 'write' }, 'duration')
+      entrySettings(
+        {
+          ...settings,
+          duration: choice.ticks,
+          dotted: choice.ticks === 60 ? false : settings.dotted,
+          mode: 'write',
+        },
+        'duration',
+      )
       return
     }
     if (key === 'delete' || key === 'backspace') {
@@ -375,7 +450,7 @@ export function App() {
       removeSelected()
       return
     }
-    if (key === '.' || key === 'h') {
+    if ((key === '.' && settings.duration !== 60) || key === 'h') {
       event.preventDefault()
       entrySettings(
         key === '.'
@@ -459,6 +534,40 @@ export function App() {
     }
   }
 
+  function selectRoll(ids: string[], at?: { tick: number; midi: number }, document = score): void {
+    const part = document.tracks.find((part) => part.id === selectedTrackId)!
+    const note = pianoNotes(document, selectedTrackId).find((note) => ids.includes(note.event.id))
+    if (note) {
+      setCursor({
+        trackId: selectedTrackId,
+        staffId: note.staffId,
+        tick: note.event.startTick,
+        pitch: note.event.pitch,
+        eventId: note.event.id,
+        selectedIds: ids,
+      })
+      const base = baseDuration(note.event.durationTicks)
+      // A sustained roll duration may need several notation glyphs. Keep the last
+      // insertion duration until the composer explicitly chooses a replacement.
+      if (durationChoices.some((choice) => choice.ticks === base))
+        setSettings((previous) => ({
+          ...previous,
+          duration: base,
+          dotted: isDotted(note.event.durationTicks),
+          accidental: note.event.pitch.accidental,
+        }))
+    } else if (at) {
+      const staff = defaultStaff(part, at.midi, rollPreferences.newStaff)
+      setCursor({
+        trackId: selectedTrackId,
+        staffId: staff.id,
+        tick: at.tick,
+        pitch: spellMidi(document, staff, at.tick, at.midi),
+      })
+    } else setCursor((previous) => ({ ...previous, eventId: undefined, selectedIds: undefined }))
+    setError('')
+  }
+
   return (
     <div className="app-shell" onKeyDown={handleHistoryKey}>
       <header className="app-header">
@@ -471,7 +580,7 @@ export function App() {
           </div>
         </div>
         <span className="milestone">
-          Milestone 2B <span>Write directly on the score</span>
+          Milestone 3A <span>One composition, two views</span>
         </span>
         <nav aria-label="File actions">
           <button
@@ -619,20 +728,8 @@ export function App() {
           </section>
           <section className="tool-section note-tools">
             <div className="section-heading">
-              <h2>Active staff</h2>
+              <h2>Editing</h2>
               <span>BAR {selectedMeasure + 1}</span>
-            </div>
-            <div className="staff-choices">
-              {selectedTrack.staves.map((staff) => (
-                <button
-                  key={staff.id}
-                  disabled={busy}
-                  aria-pressed={staff.id === cursor.staffId}
-                  onClick={() => selectStaff(selectedTrack.id, staff.id)}
-                >
-                  {staff.clef === 'treble' ? 'Treble staff' : 'Bass staff'}
-                </button>
-              ))}
             </div>
             <p className="help">
               Click to write and hear a pitch. Drag a note vertically to repitch; Escape cancels.
@@ -640,8 +737,8 @@ export function App() {
               entries.
             </p>
             <dl className="keyboard-guide">
-              <dt>1–5</dt>
-              <dd>Whole → sixteenth</dd>
+              <dt>1–6</dt>
+              <dd>Whole → thirty-second</dd>
               <dt>A–G</dt>
               <dd>Enter pitch, advance</dd>
               <dt>↑ / ↓</dt>
@@ -708,8 +805,55 @@ export function App() {
               {error}
             </div>
           )}
+          <div
+            className="view-tabs"
+            role="tablist"
+            aria-label="Composition view"
+            onKeyDown={(event) => {
+              if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+                event.preventDefault()
+                event.stopPropagation()
+                const next =
+                  event.key === 'Home'
+                    ? 'notation'
+                    : event.key === 'End'
+                      ? 'piano-roll'
+                      : view === 'notation'
+                        ? 'piano-roll'
+                        : 'notation'
+                switchView(next)
+                document
+                  .getElementById(next === 'notation' ? 'notation-tab' : 'roll-tab')
+                  ?.focus({ preventScroll: true })
+              }
+            }}
+          >
+            <button
+              id="notation-tab"
+              role="tab"
+              aria-selected={view === 'notation'}
+              aria-controls="notation-panel"
+              onClick={() => switchView('notation')}
+            >
+              Notation
+            </button>
+            <button
+              id="roll-tab"
+              role="tab"
+              aria-selected={view === 'piano-roll'}
+              aria-controls="roll-panel"
+              onClick={() => switchView('piano-roll')}
+            >
+              Piano roll
+            </button>
+          </div>
           <div className="entry-bar">
-            <NotationToolbar settings={settings} disabled={busy} onChange={entrySettings} />
+            <NotationToolbar
+              settings={settings}
+              disabled={busy}
+              pianoRoll={view === 'piano-roll'}
+              onChange={entrySettings}
+            />
             <div className="entry-commands">
               <button
                 aria-pressed={auditionEnabled}
@@ -735,77 +879,148 @@ export function App() {
               >
                 Redo
               </button>
+              {view === 'notation' && (
+                <button
+                  disabled={busy || !selection.length}
+                  onClick={() =>
+                    setCursor((previous) => ({
+                      ...previous,
+                      selectedIds: linkedNotes(score, selectedTrackId, selection),
+                    }))
+                  }
+                >
+                  Select chord / ties
+                </button>
+              )}
               <button disabled={busy || !selection.length} onClick={tieSelected}>
                 Toggle tie
               </button>
-              <button disabled={busy} onClick={() => enter()}>
-                {settings.rest ? 'Insert rest' : 'Enter note'}
-              </button>
+              {view === 'notation' && (
+                <button disabled={busy} onClick={() => enter()}>
+                  {settings.rest ? 'Insert rest' : 'Enter note'}
+                </button>
+              )}
               <button disabled={busy || !selection.length} onClick={removeSelected}>
                 Delete selected
               </button>
-              <button
-                disabled={busy || selectedEvents.length === 0}
-                onClick={() => {
-                  const last = selectedEvents.at(-1)!
-                  change(removeLastEvent(score, cursor.trackId, selectedMeasure, cursor.staffId))
-                  setCursor({
-                    ...cursor,
-                    tick: last.startTick,
-                    eventId: undefined,
-                    selectedIds: undefined,
-                  })
-                }}
-              >
-                Remove last entry
-              </button>
+              {view === 'notation' && (
+                <button
+                  disabled={busy || selectedEvents.length === 0}
+                  onClick={() => {
+                    const last = selectedEvents.at(-1)!
+                    change(removeLastEvent(score, cursor.trackId, selectedMeasure, cursor.staffId))
+                    setCursor({
+                      ...cursor,
+                      tick: last.startTick,
+                      eventId: undefined,
+                      selectedIds: undefined,
+                    })
+                  }}
+                >
+                  Remove last entry
+                </button>
+              )}
             </div>
             <p className="cursor-status" aria-live="polite">
               {selectedTrack.name} · {selectedStaff.clef} · Measure {selectedMeasure + 1}, beat{' '}
-              {(cursor.tick - measureStart(score, selectedMeasure)) / 480 + 1}
+              {(cursor.tick - measureStart(score, selectedMeasure)) /
+                (1920 / signatureAt(score, selectedMeasure).timeSignature.denominator) +
+                1}
               {cursor.tick === scoreEnd(score) ? ' · End of score' : ''}
               {cursor.eventId
                 ? ` · ${selection.length} selected`
                 : ` · ${cursor.pitch.step}${cursor.pitch.accidental}${cursor.pitch.octave}`}
             </p>
           </div>
-          <ScoreView
-            score={score}
-            cursor={cursor}
-            settings={settings}
-            disabled={busy}
-            onSelect={(next) => {
-              if (!busy) {
-                setCursor(next)
-                const selected = getStaff(score, next.trackId, next.staffId).events.find(
-                  (event) => event.id === next.eventId,
-                )
-                if (selected)
-                  setSettings((previous) => ({
-                    ...previous,
-                    duration: baseDuration(selected.durationTicks) as DurationTicks,
-                    dotted: isDotted(selected.durationTicks),
-                    accidental:
-                      selected.kind === 'note' ? selected.pitch.accidental : previous.accidental,
-                  }))
-                setError('')
-              }
-            }}
-            onSignatureChange={applySignature}
-            onPitchChange={(eventId, staffId, pitch) => {
-              if (busy) return
-              try {
-                if (change(changePitch(score, eventId, pitch)))
-                  setCursor((previous) => ({ ...previous, staffId, pitch }))
-              } catch (cause) {
-                showError(cause)
-              }
-            }}
-            onAudition={previewPitch}
-            onStopAudition={() => audition.current?.stop()}
-            onInsert={enter}
-            onSettings={entrySettings}
-          />
+          {view === 'piano-roll' ? (
+            <div id="roll-panel" role="tabpanel" aria-labelledby="roll-tab">
+              <PianoRoll
+                key={selectedTrackId}
+                score={score}
+                trackId={selectedTrackId}
+                cursor={cursor}
+                selection={selection}
+                settings={settings}
+                preferences={rollPreferences}
+                disabled={busy}
+                initialScroll={rollScroll.current[selectedTrackId]}
+                onScroll={(position) => {
+                  rollScroll.current[selectedTrackId] = position
+                }}
+                onPreferences={setRollPreferences}
+                onSelect={(ids, at) => selectRoll(ids, at)}
+                onInsert={(tick, midi, duration, staff) => {
+                  const result = insertPianoNote(
+                    score,
+                    selectedTrackId,
+                    tick,
+                    midi,
+                    duration,
+                    staff,
+                  )
+                  if (!change(result.score)) throw new Error('Unable to insert the note.')
+                  selectRoll([result.id], undefined, result.score)
+                }}
+                onEdit={(updates: NoteUpdate[]) => {
+                  const edited = editPianoNotes(score, selectedTrackId, updates)
+                  if (!change(edited)) throw new Error('Unable to edit the notes.')
+                  selectRoll(selection, undefined, edited)
+                }}
+                onDelete={removeSelected}
+                onSettings={entrySettings}
+                onAudition={(midi) => {
+                  if (auditionEnabled && midi >= 11 && midi <= 127) audition.current?.play(midi)
+                }}
+                onStopAudition={() => audition.current?.stop()}
+              />
+            </div>
+          ) : (
+            <div id="notation-panel" role="tabpanel" aria-labelledby="notation-tab">
+              <ScoreView
+                score={score}
+                cursor={cursor}
+                settings={settings}
+                disabled={busy}
+                onSelect={(next) => {
+                  if (!busy) {
+                    setCursor(next)
+                    const selected = getStaff(score, next.trackId, next.staffId).events.find(
+                      (event) => event.id === next.eventId,
+                    )
+                    if (selected)
+                      setSettings((previous) => ({
+                        ...previous,
+                        duration: durationChoices.some(
+                          (choice) => choice.ticks === baseDuration(selected.durationTicks),
+                        )
+                          ? baseDuration(selected.durationTicks)
+                          : previous.duration,
+                        dotted: isDotted(selected.durationTicks),
+                        accidental:
+                          selected.kind === 'note'
+                            ? selected.pitch.accidental
+                            : previous.accidental,
+                      }))
+                    setError('')
+                  }
+                }}
+                onSignatureChange={applySignature}
+                onPitchChange={(eventId, staffId, pitch) => {
+                  if (busy) return
+                  try {
+                    if (change(changePitch(score, eventId, pitch)))
+                      setCursor((previous) => ({ ...previous, staffId, pitch }))
+                  } catch (cause) {
+                    showError(cause)
+                  }
+                }}
+                onAudition={previewPitch}
+                onStopAudition={() => audition.current?.stop()}
+                onInsert={enter}
+                onSettings={entrySettings}
+              />
+            </div>
+          )}
         </main>
       </div>
       <footer className="status-bar">

@@ -14,6 +14,7 @@ export const durationChoices = [
   { ticks: 480, name: 'Quarter', key: '3' },
   { ticks: 240, name: 'Eighth', key: '4' },
   { ticks: 120, name: 'Sixteenth', key: '5' },
+  { ticks: 60, name: 'Thirty-second', key: '6' },
 ] as const
 
 function DurationIcon({ ticks }: { ticks: DurationTicks }) {
@@ -31,7 +32,8 @@ function DurationIcon({ ticks }: { ticks: DurationTicks }) {
       />
       {ticks < 1920 && <path d="M13 18V3" stroke="currentColor" strokeWidth="1.6" />}
       {ticks <= 240 && <path d="M13 3Q23 8 17 14Q19 8 13 7" fill="currentColor" />}
-      {ticks === 120 && <path d="M13 8Q23 13 17 19Q19 13 13 12" fill="currentColor" />}
+      {ticks <= 120 && <path d="M13 8Q23 13 17 19Q19 13 13 12" fill="currentColor" />}
+      {ticks === 60 && <path d="M13 13Q23 18 17 24Q19 18 13 17" fill="currentColor" />}
     </svg>
   )
 }
@@ -41,11 +43,13 @@ export function NotationToolbar({
   onChange,
   disabled = false,
   compact = false,
+  pianoRoll = false,
 }: {
   settings: EntrySettings
   onChange(settings: EntrySettings, field?: keyof EntrySettings): void
   disabled?: boolean
   compact?: boolean
+  pianoRoll?: boolean
 }) {
   return (
     <div
@@ -53,7 +57,7 @@ export function NotationToolbar({
       role="toolbar"
       aria-label={compact ? 'Measure note entry' : 'Notation toolbar'}
     >
-      {!compact && (
+      {!compact && !pianoRoll && (
         <div className="tool-group">
           <button
             aria-pressed={settings.mode === 'write'}
@@ -81,7 +85,17 @@ export function NotationToolbar({
             aria-label={`${name} duration`}
             aria-pressed={settings.duration === ticks}
             title={`${name} (${key})`}
-            onClick={() => onChange({ ...settings, duration: ticks, mode: 'write' }, 'duration')}
+            onClick={() =>
+              onChange(
+                {
+                  ...settings,
+                  duration: ticks,
+                  dotted: ticks === 60 ? false : settings.dotted,
+                  mode: 'write',
+                },
+                'duration',
+              )
+            }
           >
             <DurationIcon ticks={ticks} />
             <small>{key}</small>
@@ -92,13 +106,13 @@ export function NotationToolbar({
         <button
           aria-label="Dotted duration"
           title="Toggle dotted duration (.)"
-          disabled={disabled}
+          disabled={disabled || settings.duration === 60}
           aria-pressed={!!settings.dotted}
           onClick={() => onChange({ ...settings, dotted: !settings.dotted }, 'dotted')}
         >
           ·
         </button>
-        {!compact && (
+        {!compact && !pianoRoll && (
           <button
             aria-label="Chord entry"
             title="Keep the beat to add chord tones (H)"
@@ -109,26 +123,35 @@ export function NotationToolbar({
             Chord
           </button>
         )}
-        <button
-          aria-label="Rest entry"
-          title="Toggle rests (R); insert rest (0)"
-          disabled={disabled}
-          aria-pressed={settings.rest}
-          onClick={() => onChange({ ...settings, rest: !settings.rest, mode: 'write' })}
-        >
-          Rest
-        </button>
-        {(['', '#', 'b', 'n'] as const).map((accidental) => (
+        {!pianoRoll && (
           <button
-            key={accidental}
+            aria-label="Rest entry"
+            title="Toggle rests (R); insert rest (0)"
             disabled={disabled}
-            aria-label={`${accidental === '#' ? 'Sharp' : accidental === 'b' ? 'Flat' : accidental === 'n' ? 'Natural' : 'Key signature'} accidental`}
-            aria-pressed={settings.accidental === accidental}
-            onClick={() => onChange({ ...settings, accidental }, 'accidental')}
+            aria-pressed={settings.rest}
+            onClick={() => onChange({ ...settings, rest: !settings.rest, mode: 'write' })}
           >
-            {accidental === '#' ? '♯' : accidental === 'b' ? '♭' : accidental === 'n' ? '♮' : 'Key'}
+            Rest
           </button>
-        ))}
+        )}
+        {!pianoRoll &&
+          (['', '#', 'b', 'n'] as const).map((accidental) => (
+            <button
+              key={accidental}
+              disabled={disabled}
+              aria-label={`${accidental === '#' ? 'Sharp' : accidental === 'b' ? 'Flat' : accidental === 'n' ? 'Natural' : 'Key signature'} accidental`}
+              aria-pressed={settings.accidental === accidental}
+              onClick={() => onChange({ ...settings, accidental }, 'accidental')}
+            >
+              {accidental === '#'
+                ? '♯'
+                : accidental === 'b'
+                  ? '♭'
+                  : accidental === 'n'
+                    ? '♮'
+                    : 'Key'}
+            </button>
+          ))}
       </div>
     </div>
   )

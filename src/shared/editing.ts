@@ -34,20 +34,22 @@ export function updateEvents(
 export function changePitch(score: Composition, id: string, pitch: Pitch): Composition {
   return updateEvents(score, [id], (event) => (event.kind === 'note' ? { ...event, pitch } : event))
 }
-/** Chord tones share one engraved rhythm. Resize all tones, or reject the whole edit. */
+/** Edit only explicit selections; validation rejects incompatible chord rhythms atomically. */
 export function changeDuration(
   score: Composition,
   ids: string[],
   durationTicks: DurationTicks,
 ): Composition {
-  const expanded = new Set(ids)
-  for (const track of score.tracks)
-    for (const staff of track.staves) {
-      const selected = staff.events.filter((event) => expanded.has(event.id))
-      for (const event of staff.events)
-        if (selected.some((item) => item.startTick === event.startTick)) expanded.add(event.id)
-    }
-  return updateEvents(score, [...expanded], (event) => ({ ...event, durationTicks }))
+  return updateEvents(score, ids, (event) => {
+    if (
+      event.startTick + durationTicks >
+      measureStart(score, measureAtTick(score, event.startTick) + 1)
+    )
+      throw new Error(
+        'The duration crosses a barline. Use the piano roll to create a sustained note.',
+      )
+    return { ...event, durationTicks }
+  })
 }
 export function toggleTies(score: Composition, ids: string[]): Composition {
   const targets = new Map<string, string | undefined>()
@@ -111,7 +113,11 @@ export function changeSignature(
           const bar = measureAtTick(score, event.startTick)
           const offset = event.startTick - measureStart(score, bar)
           const startTick = measureStart(next, bar) + offset
-          if (startTick + event.durationTicks > measureStart(next, bar + 1))
+          if (
+            offset >= measureStart(next, bar + 1) - measureStart(next, bar) ||
+            (event.startTick + event.durationTicks <= measureStart(score, bar + 1) &&
+              startTick + event.durationTicks > measureStart(next, bar + 1))
+          )
             throw new Error(
               `Measure ${bar + 1} contains music that will not fit. Shorten or move those entries before changing meter.`,
             )

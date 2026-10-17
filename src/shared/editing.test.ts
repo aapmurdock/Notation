@@ -103,7 +103,12 @@ describe('advanced canonical edits', () => {
     score = add(score, 0, pitch('G'), 480, true)
     expect(events(score)).toHaveLength(3)
     expect(events(score)[0]!.id).toBe(first.id)
-    const dotted = changeDuration(score, [first.id], 720)
+    expect(() => changeDuration(score, [first.id], 720)).toThrow(/overlapping voices/)
+    const dotted = changeDuration(
+      score,
+      events(score).map((event) => event.id),
+      720,
+    )
     expect(events(dotted).map((event) => event.durationTicks)).toEqual([720, 720, 720])
     expect(events(dotted).map((event) => event.startTick)).toEqual([0, 0, 0])
     expect(() => add(score, 0, pitch('C'), 480, true)).toThrow(/duplicate/)

@@ -39,3 +39,29 @@ describe('engraving adapter', () => {
     expect(events.map((event) => event.durationTicks)).toEqual([480, 480, 960])
   })
 })
+
+it('fragments sustained and arbitrary durations exactly without mutating the source note', () => {
+  const score = createComposition()
+  const staff = score.tracks[0]!.staves[0]!
+  const event = {
+    id: 'sustained',
+    kind: 'note' as const,
+    startTick: 1860,
+    durationTicks: 360,
+    pitch: { step: 'F' as const, octave: 4, accidental: '#' as const },
+    velocity: 91,
+  }
+  staff.events.push(event)
+  const first = measureEvents(score, staff, 0).filter((item) => !item.implicit)
+  const second = measureEvents(score, staff, 1).filter((item) => !item.implicit)
+  expect(first.map((item) => [item.startTick, item.durationTicks])).toEqual([[1860, 60]])
+  expect(second.map((item) => [item.startTick, item.durationTicks])).toEqual([
+    [1920, 240],
+    [2160, 60],
+  ])
+  expect([...first, ...second].every((item) => item.source === event)).toBe(true)
+  expect(staff.events).toEqual([event])
+  expect(measureEvents(score, staff, 1).reduce((sum, item) => sum + item.durationTicks, 0)).toBe(
+    1920,
+  )
+})

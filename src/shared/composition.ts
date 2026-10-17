@@ -13,9 +13,10 @@ import {
 
 /** Canonical, serializable score data. No Electron, React, or VexFlow dependencies. */
 export const PPQ = 480
-export const SCHEMA_VERSION = 3
+export const SCHEMA_VERSION = 4
 export const DURATIONS = [2880, 1920, 1440, 960, 720, 480, 360, 240, 180, 120, 60] as const
-export type DurationTicks = (typeof DURATIONS)[number]
+/** Exact musical durations: positive multiples of 60 ticks, checked at the model boundary. */
+export type DurationTicks = number
 export const isDotted = (duration: number): boolean =>
   [2880, 1440, 720, 360, 180].includes(duration)
 export const baseDuration = (duration: number): number =>
@@ -46,7 +47,7 @@ export interface Track {
   staves: Staff[]
 }
 export interface Composition {
-  schemaVersion: 3
+  schemaVersion: 4
   id: string
   title: string
   tempoBpm: number
@@ -315,10 +316,12 @@ function list(value: unknown, min: number, max: number, field: string): unknown[
 /** Validate untrusted file/IPC data and return a fresh object, dropping unknown fields. */
 export function parseComposition(input: unknown): Composition {
   let source = record(input)
+  const legacy = [1, 2, 3].includes(source.schemaVersion as number)
   if (source.schemaVersion === 1) source = migrateVersionOne(source)
   if (source.schemaVersion === 2) source = { ...source, schemaVersion: 3, signatureChanges: [] }
+  if (source.schemaVersion === 3) source = { ...source, schemaVersion: 4 }
   if (source.schemaVersion !== SCHEMA_VERSION)
-    throw new Error('Unsupported score version. Expected version 1, 2, or 3.')
+    throw new Error('Unsupported score version. Expected version 1, 2, 3, or 4.')
   const parseTime = (value: unknown): TimeSignature => {
     const time = record(value)
     const supported = TIME_SIGNATURES.find(
@@ -381,7 +384,10 @@ export function parseComposition(input: unknown): Composition {
       const events = list(staff.events, 0, 4096, 'Events').map((value): ScoreEvent => {
         const event = record(value)
         const startTick = integer(event.startTick, 0, end - 1, 'Event position')
-        const durationTicks = oneOf(event.durationTicks, DURATIONS, 'duration')
+        const durationTicks = integer(event.durationTicks, 60, end, 'Duration')
+        if (durationTicks % 60 !== 0) throw new Error('Durations must align to the 60-tick grid.')
+        if (legacy && !DURATIONS.includes(durationTicks as (typeof DURATIONS)[number]))
+          throw new Error('Unsupported legacy duration.')
         if (startTick % 60 !== 0) throw new Error('Events must align to the 60-tick grid.')
         if (
           startTick < endTick &&
@@ -393,13 +399,16 @@ export function parseComposition(input: unknown): Composition {
           )
         )
           throw new Error(
-            'Overlapping entries must be chord tones with identical start and duration.',
+            'Overlapping entries must be chord tones with identical start and duration. Independent overlapping voices are not supported; select the whole chord or choose unoccupied time.',
           )
         if (
+          legacy &&
           measureAtTick(timing, startTick) !== measureAtTick(timing, startTick + durationTicks - 1)
         ) {
           throw new Error('Events cannot cross a barline. Use separate notes connected by a tie.')
         }
+        if (startTick + durationTicks > end)
+          throw new Error('The duration extends past the end of the score.')
         endTick = startTick + durationTicks
         const base = { id: uniqueId(event.id), startTick, durationTicks }
         if (event.kind === 'rest') {
@@ -437,7 +446,7 @@ export function parseComposition(input: unknown): Composition {
     }
   })
   const score: Composition = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     id,
     title: text(source.title, 'Title'),
     tempoBpm: integer(source.tempoBpm, 30, 240, 'Tempo'),

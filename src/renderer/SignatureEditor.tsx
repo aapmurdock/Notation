@@ -116,8 +116,8 @@ export function SignatureEditor({
         </label>
       )}
       <p className="help">
-        Meter edits keep music in its measure and beat. Entries that would overflow must be
-        shortened or moved first.
+        Meter edits keep note starts in their measure and beat. Incompatible timing is rejected;
+        sustained notes keep their duration.
       </p>
       {error && (
         <p className="signature-error" role="alert">
