@@ -62,7 +62,7 @@ test('desktop saves and reopens independently entered grand staff music and migr
     await page.getByRole('button', { name: 'Save score' }).click()
     await expect(page.getByRole('status')).toHaveText('Saved first.notation.')
     const saved = parseComposition(JSON.parse(await readFile(scorePath, 'utf8')))
-    expect(saved.schemaVersion).toBe(3)
+    expect(saved.schemaVersion).toBe(4)
     expect(saved.tracks[0]!.staves[0]!.events).toMatchObject([
       { startTick: 0, durationTicks: 480, pitch: { step: 'E', octave: 4 } },
     ])
@@ -102,7 +102,7 @@ test('desktop saves and reopens independently entered grand staff music and migr
     await expect(page.locator('.score-interaction g[data-clef="bass"]')).toHaveCount(4)
     await page.getByRole('button', { name: 'Save score' }).click()
     await expect(page.getByRole('status')).toHaveText('Saved first.notation.')
-    expect(JSON.parse(await readFile(scorePath, 'utf8')).schemaVersion).toBe(3)
+    expect(JSON.parse(await readFile(scorePath, 'utf8')).schemaVersion).toBe(4)
     await writeFile(scorePath, '{"schemaVersion":999}')
     await page.getByRole('button', { name: 'Open', exact: true }).click()
     await expect(page.getByRole('alert')).toContainText('Unsupported score version')
@@ -295,7 +295,7 @@ test('desktop restores edited chords, dotted rests, ties, and local signatures e
     await page.getByRole('button', { name: 'Save score', exact: true }).click()
     await expect(page.getByRole('status')).toHaveText('Saved edited.notation.')
     const saved = parseComposition(JSON.parse(await readFile(filePath, 'utf8')))
-    expect(saved.schemaVersion).toBe(3)
+    expect(saved.schemaVersion).toBe(4)
     expect(saved.signatureChanges).toEqual([
       { measure: 2, keySignature: 'Dm', timeSignature: { numerator: 6, denominator: 8 } },
     ])

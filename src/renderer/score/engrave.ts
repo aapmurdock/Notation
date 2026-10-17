@@ -46,6 +46,7 @@ interface Row {
 }
 export interface EngravedEvent {
   event: ScoreEvent
+  fragmentTick: number
   x: number
   y: number
   left: number
@@ -106,7 +107,8 @@ function createVoice(score: Composition, staff: Staff, measure: number) {
       clef: staff.clef,
       keys: group.map((event) => {
         if (event.kind === 'rest') return staff.clef === 'bass' ? 'd/3' : 'b/4'
-        const pitch = resolvedPitch(score, staff, event.startTick, event.pitch)
+        const source = event.source ?? event
+        const pitch = resolvedPitch(score, staff, source.startTick, event.pitch)
         return `${pitch.step.toLowerCase()}${pitch.accidental}/${pitch.octave}`
       }),
       duration: `${durations[baseDuration(event.durationTicks)]}${event.kind === 'rest' ? 'r' : ''}`,
@@ -226,7 +228,8 @@ export function engrave(
   renderer.resize(width, height)
   const context = renderer.getContext()
   const measures: StaffMeasure[] = []
-  const rendered = new Map<string, { note: StaveNote; index: number; system: number }>()
+  type Rendered = { note: StaveNote; index: number; system: number; tick: number }
+  const rendered = new Map<string, Rendered[]>()
 
   systems.forEach((system, systemIndex) => {
     const group = context.openGroup('score-system')
@@ -292,9 +295,12 @@ export function engrave(
             for (const [toneIndex, tone] of group.entries()) {
               const head = heads?.[toneIndex]?.querySelector<SVGGraphicsElement>('text')?.getBBox()
               const box = note.getBoundingBox()
-              rendered.set(tone.id, { note, index: toneIndex, system: systemIndex })
+              const fragments = rendered.get(tone.id) ?? []
+              fragments.push({ note, index: toneIndex, system: systemIndex, tick: tone.startTick })
+              rendered.set(tone.id, fragments)
               engravedEvents.push({
-                event: tone,
+                event: tone.source ?? tone,
+                fragmentTick: tone.startTick,
                 x: head ? head.x + head.width / 2 - 4 : note.getAbsoluteX(),
                 y: note.getYs()[toneIndex] ?? note.getYs()[0]!,
                 left: box.x,
@@ -392,37 +398,38 @@ export function engrave(
     })
     context.closeGroup()
   })
+  function drawTie(from: Rendered, to: Rendered, fromId: string, toId: string): void {
+    const group = context.openGroup('notation-tie')
+    group.setAttribute('data-from', fromId)
+    group.setAttribute('data-to', toId)
+    if (from.system === to.system) {
+      new StaveTie({
+        firstNote: from.note,
+        lastNote: to.note,
+        firstIndexes: [from.index],
+        lastIndexes: [to.index],
+      })
+        .setContext(context)
+        .draw()
+    } else {
+      new StaveTie({ firstNote: from.note, firstIndexes: [from.index], lastIndexes: [from.index] })
+        .setContext(context)
+        .draw()
+      new StaveTie({ lastNote: to.note, firstIndexes: [to.index], lastIndexes: [to.index] })
+        .setContext(context)
+        .draw()
+    }
+    context.closeGroup()
+  }
   for (const track of score.tracks)
     for (const staff of track.staves)
       for (const event of staff.events)
-        if (event.kind === 'note' && event.tieTo) {
-          const from = rendered.get(event.id)!,
-            to = rendered.get(event.tieTo)!
-          const group = context.openGroup('notation-tie')
-          group.setAttribute('data-from', event.id)
-          group.setAttribute('data-to', event.tieTo)
-          if (from.system === to.system) {
-            new StaveTie({
-              firstNote: from.note,
-              lastNote: to.note,
-              firstIndexes: [from.index],
-              lastIndexes: [to.index],
-            })
-              .setContext(context)
-              .draw()
-          } else {
-            new StaveTie({
-              firstNote: from.note,
-              firstIndexes: [from.index],
-              lastIndexes: [from.index],
-            })
-              .setContext(context)
-              .draw()
-            new StaveTie({ lastNote: to.note, firstIndexes: [to.index], lastIndexes: [to.index] })
-              .setContext(context)
-              .draw()
-          }
-          context.closeGroup()
+        if (event.kind === 'note') {
+          const fragments = rendered.get(event.id)!.sort((a, b) => a.tick - b.tick)
+          for (let index = 1; index < fragments.length; index++)
+            drawTie(fragments[index - 1]!, fragments[index]!, event.id, event.id)
+          if (event.tieTo)
+            drawTie(fragments.at(-1)!, rendered.get(event.tieTo)![0]!, event.id, event.tieTo)
         }
   container.style.removeProperty('width')
   const svg = container.querySelector('svg')!

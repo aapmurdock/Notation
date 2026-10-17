@@ -253,7 +253,7 @@ export function ScoreView({
       measure.measure === Math.min(score.measureCount - 1, measureAtTick(score, cursor.tick)),
   )
   const hovered = drag
-    ? { measure: drag.measure, tick: drag.item.event.startTick, pitch: drag.pitch }
+    ? { measure: drag.measure, tick: drag.item.fragmentTick, pitch: drag.pitch }
     : settings.mode === 'write' && !disabled && !drawing
       ? preview
         ? { ...preview, pitch: { ...preview.pitch, accidental: settings.accidental } }
@@ -415,11 +415,11 @@ export function ScoreView({
                     />
                     {measure.events.map((item) => (
                       <rect
-                        key={item.event.id}
+                        key={`${item.event.id}-${item.fragmentTick}`}
                         className="event-hit"
                         role="button"
                         tabIndex={disabled ? -1 : 0}
-                        aria-label={`${item.event.kind === 'note' ? `${item.event.pitch.step}${item.event.pitch.accidental === 'n' ? '♮' : item.event.pitch.accidental}${item.event.pitch.octave} note` : 'Rest'}, ${measure.name} ${measure.clef}, measure ${measure.measure + 1}, beat ${(item.event.startTick - measureStart(score, measure.measure)) / 480 + 1}`}
+                        aria-label={`${item.event.kind === 'note' ? `${item.event.pitch.step}${item.event.pitch.accidental === 'n' ? '♮' : item.event.pitch.accidental}${item.event.pitch.octave} note` : 'Rest'}, ${measure.name} ${measure.clef}, measure ${measure.measure + 1}, beat ${(item.fragmentTick - measureStart(score, measure.measure)) / (1920 / signatureAt(score, measure.measure).timeSignature.denominator) + 1}`}
                         aria-pressed={
                           cursor.selectedIds
                             ? cursor.selectedIds.includes(item.event.id)
@@ -565,7 +565,7 @@ export function ScoreView({
                 )
                 .map((selected) => (
                   <ellipse
-                    key={selected.event.id}
+                    key={`${selected.event.id}-${selected.fragmentTick}`}
                     className="selected-entry"
                     pointerEvents="none"
                     cx={selected.x + 4}
@@ -644,7 +644,11 @@ export function ScoreView({
                     {settings.rest && !drag
                       ? 'Rest'
                       : `${hovered.pitch.step}${hovered.pitch.accidental}${hovered.pitch.octave}`}{' '}
-                    · beat {(hovered.tick - measureStart(score, hovered.measure.measure)) / 480 + 1}
+                    · beat{' '}
+                    {(hovered.tick - measureStart(score, hovered.measure.measure)) /
+                      (1920 /
+                        signatureAt(score, hovered.measure.measure).timeSignature.denominator) +
+                      1}
                   </text>
                 </g>
               )}

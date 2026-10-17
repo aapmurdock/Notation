@@ -137,3 +137,60 @@ button[aria-pressed="true"] { border-color: #a5baff; background: #edf2ff; color:
 .signature-popover { width: 265px; }
 .signature-popover .signature-editor { margin: 0; }
 .entry-bar { scroll-margin-top: 12px; }
+
+.view-tabs { display: flex; gap: 4px; max-width: 1100px; margin: 0 auto 12px; }
+.view-tabs button { padding: 9px 18px; background: transparent; border-color: transparent; }
+.view-tabs button[aria-selected="true"] { color: #244dcf; background: #edf2ff; border-color: #a5baff; }
+.piano-roll { max-width: 1100px; margin: 0 auto; background: white; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.roll-heading { display: flex; justify-content: space-between; align-items: center; padding: 20px; }
+.roll-heading h2 { margin: 6px 0; font-size: 20px; }
+.roll-heading p:last-child, .roll-help, .roll-selection-status { color: var(--muted); font-size: 11px; }
+.roll-staff-legend { display: flex; gap: 14px; font-size: 11px; }
+.roll-staff-legend span::before { content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; background: #426bc8; }
+.roll-staff-legend .bass-swatch::before { background: #7b54a5; }
+.roll-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 12px 20px; background: #f7f9fc; border-block: 1px solid var(--line); }
+.roll-toolbar button { font-size: 11px; padding: 7px 9px; }
+.roll-toolbar label { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+.roll-toolbar select { margin: 0; width: auto; font-size: 11px; padding: 6px; }
+.zoom-label { width: 40px; text-align: center; font-size: 11px; color: var(--muted); }
+.roll-help { padding: 12px 20px; line-height: 1.6; }
+.roll-viewport { height: min(56vh, 580px); min-height: 300px; overflow: auto; overscroll-behavior: contain; border-block: 1px solid var(--line); position: relative; background: #f0f3f8; }
+.roll-content { position: relative; min-width: 100%; }
+.roll-ruler { position: sticky; top: 0; height: 28px; z-index: 3; pointer-events: none; }
+.roll-ruler svg { display: block; }
+.roll-ruler-corner { position: sticky; left: 0; top: 0; display: block; width: 64px; height: 28px; margin-top: -28px; padding: 8px; background: #e9eef6; border-right: 1px solid #c0cad9; font-size: 9px; letter-spacing: 1px; color: #5e6c81; }
+.roll-keyboard { position: sticky; left: 0; top: 28px; width: 64px; margin-top: 0; z-index: 2; background: #e6ebf3; }
+.roll-keyboard svg { display: block; }
+.roll-grid { position: absolute; touch-action: none; cursor: crosshair; }
+.roll-grid:focus-visible { outline: 2px solid #7197fc; outline-offset: -2px; }
+.roll-pitch-row { fill: #fff; stroke: #e8edf4; stroke-width: .5; }
+.roll-pitch-row.black { fill: #f1f4f8; }
+.roll-pitch-row.middle-c { stroke: #a2b4d0; stroke-width: 1; }
+.roll-grid-line { stroke: #dce3ed; stroke-width: 1; }
+.roll-grid-line.beat { stroke: #b8c5d7; }
+.roll-grid-line.compound { stroke: #a1b1c8; stroke-width: 1.4; }
+.roll-grid-line.measure { stroke: #8296b2; stroke-width: 1.5; }
+.roll-ruler text { font-family: 'Segoe UI', sans-serif; font-size: 10px; fill: #66758d; }
+.roll-ruler .measure-label { fill: #2c405e; font-weight: 700; }
+.roll-note-body { fill: #5276c9; stroke: #355aab; stroke-width: .8; cursor: move; }
+.roll-note.bass .roll-note-body { fill: #8868ac; stroke: #67418e; }
+.roll-note.selected .roll-note-body { fill: #234dc8; stroke: #122d83; stroke-width: 2; }
+.roll-note.selected.bass .roll-note-body { fill: #653795; stroke: #452166; }
+.roll-note-body:focus-visible, .roll-resize-handle:focus-visible { outline: none; stroke: #f3a42a; stroke-width: 3; }
+.roll-note-label { font: 10px 'Segoe UI', sans-serif; fill: white; }
+.roll-resize-handle { fill: #ffffff40; cursor: ew-resize; }
+.roll-resize-handle:hover { fill: #ffffffa0; }
+.roll-ties path { fill: none; stroke: #6b7ea1; stroke-width: 1.5; }
+.roll-insert-preview { fill: #365de733; stroke: #365de7; stroke-dasharray: 3 2; }
+.roll-drag-preview { fill: #365de766; stroke: #183aaa; stroke-width: 2; }
+.roll-drag-preview.invalid { fill: #c4424266; stroke: #a62727; }
+.roll-marquee { fill: #365de71a; stroke: #365de7; stroke-dasharray: 4 2; }
+.roll-edit-cursor { stroke: #ea9c2d; stroke-width: 1.5; stroke-dasharray: 3 4; opacity: .7; }
+.roll-key { cursor: pointer; }
+.roll-key .white-key { fill: white; stroke: #aebaca; stroke-width: 1; }
+.roll-key .black-key { fill: #334058; stroke: #202d43; stroke-width: 1; }
+.roll-key text { fill: #5c6a7f; font: 9px 'Segoe UI', sans-serif; pointer-events: none; }
+.roll-key:has(.black-key) text { fill: white; }
+.roll-key:hover rect, .roll-key:focus-visible rect { fill: #a8bff7; }
+.roll-selection-status { padding: 12px 20px; }
+@media print { .view-tabs, .piano-roll { display: none; } }

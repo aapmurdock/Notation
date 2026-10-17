@@ -79,7 +79,7 @@ describe('multi-staff editing and migration', () => {
         ],
       }
       const migrated = parseComposition(legacy)
-      expect(migrated.schemaVersion).toBe(3)
+      expect(migrated.schemaVersion).toBe(4)
       expect(migrated.id).toBe(base.id)
       expect(migrated.tracks[0]!.id).toBe('old-part')
       expect(migrated.tracks[0]!.staves.find((staff) => staff.clef === clef)!.events).toEqual([
